@@ -1,0 +1,13 @@
+node_modules
+dist
+.env
+*.db
+*.db-shm
+*.db-wal
+*.db.bak
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store

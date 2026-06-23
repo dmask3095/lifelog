@@ -1,0 +1,15 @@
+node_modules
+dist
+.env
+.env.local
+*.db
+*.db-shm
+*.db-wal
+*.db.bak*
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+Thumbs.db

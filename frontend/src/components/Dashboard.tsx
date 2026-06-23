@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
-import { api } from '../api';
+import { useState } from 'react';
+import ScoreRing from './ScoreRing';
+import type { SummaryData, GroceryCategory } from '../types';
 
 const PRIORITY_CONFIG = {
   urgent: { color: '#ff4444', bg: '#1a0000', label: '🔴 Urgent' },
@@ -10,60 +11,7 @@ const PRIORITY_CONFIG = {
 
 const PRIORITY_ORDER = ['urgent', 'high', 'medium', 'low'] as const;
 
-interface TaskItem {
-  id: number;
-  title: string;
-  status: 'pending' | 'ongoing' | 'completed' | 'needs_attention';
-  priority: 'low' | 'medium' | 'high' | 'urgent';
-}
-
-interface SummaryData {
-  date: string;
-  tasks: { total: number; completed: number; ongoing: number; needsAttention: number; productivityScore: number; items: TaskItem[] };
-  hurdles: any[];
-  time: { byCategory: Record<string, number>; totalMinutes: number };
-  health: { totalWater: number; waterGoalPercent: number; foodNotes: string[]; fruits: string[]; healthScore: number };
-  body: { totalSleepMinutes: number; sleepHours: number; peeCount: number };
-  groceries: {
-    total: number;
-    eatAsapCount: number;
-    cookSoonCount: number;
-    cookedCount: number;
-    eatAsapItems: Array<{ id: number; name: string; notes: string | null }>;
-    mealIdeas: Array<{ title: string; why: string; uses: string[] }>;
-    byCategory: Record<GroceryCategory, GroceryOverviewItem[]>;
-  };
-}
-
-interface GroceryOverviewItem {
-  id: number;
-  name: string;
-  quantity: number | null;
-  unit: string | null;
-}
-
-type GroceryCategory = 'tracked' | 'eatAsap' | 'cookSoon' | 'cooked';
-
 type Range = 'daily' | 'weekly' | 'monthly';
-
-function ScoreRing({ score, color, label }: { score: number; color: string; label: string }) {
-  const r = 36;
-  const circ = 2 * Math.PI * r;
-  const offset = circ - (score / 100) * circ;
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-      <svg width="90" height="90" viewBox="0 0 90 90">
-        <circle cx="45" cy="45" r={r} fill="none" stroke="#2a2a2a" strokeWidth="7" />
-        <circle cx="45" cy="45" r={r} fill="none" stroke={color} strokeWidth="7"
-          strokeDasharray={circ} strokeDashoffset={offset}
-          strokeLinecap="round" transform="rotate(-90 45 45)"
-          style={{ transition: 'stroke-dashoffset 1s ease' }} />
-        <text x="45" y="50" textAnchor="middle" fill="#fff" fontSize="16" fontWeight="700">{score}%</text>
-      </svg>
-      <span style={{ fontSize: 12, color: '#888' }}>{label}</span>
-    </div>
-  );
-}
 
 function Bar({ label, minutes, color, max }: { label: string; minutes: number; color: string; max: number }) {
   const pct = max > 0 ? Math.min(100, (minutes / max) * 100) : 0;
@@ -139,19 +87,14 @@ function generateAnalysis(data: SummaryData): string {
   return parts.join(' ');
 }
 
-export default function Dashboard() {
-  const [range, setRange] = useState<Range>('daily');
-  const [data, setData] = useState<SummaryData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [openGroceryCategory, setOpenGroceryCategory] = useState<GroceryCategory | null>(null);
-  const today = new Date().toISOString().split('T')[0];
+interface Props {
+  data: SummaryData | null;
+  loading: boolean;
+}
 
-  useEffect(() => {
-    setLoading(true);
-    api.get(`/summary/${today}`)
-      .then(res => { setData(res.data); setLoading(false); })
-      .catch(() => setLoading(false));
-  }, [today]);
+export default function Dashboard({ data, loading }: Props) {
+  const [range, setRange] = useState<Range>('daily');
+  const [openGroceryCategory, setOpenGroceryCategory] = useState<GroceryCategory | null>(null);
 
   const timeMax = data ? Math.max(...Object.values(data.time.byCategory).map(Number), 60) : 60;
   const groupedTasks = data

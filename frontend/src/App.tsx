@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import AgendaView from './components/AgendaView';
 import HealthPanel from './components/HealthPanel';
 import TimePanel from './components/TimePanel';
@@ -10,7 +10,10 @@ import JournalPanel from './components/JournalPanel';
 import GroceriesPanel from './components/GroceriesPanel';
 import AuthScreen from './components/AuthScreen';
 import AccountPanel from './components/AccountPanel';
+import ScoreRing from './components/ScoreRing';
 import { useAuth } from './context/AuthContext';
+import { api } from './api';
+import type { SummaryData } from './types';
 import './App.css';
 
 type Tab = 'dashboard' | 'agenda' | 'habits' | 'health' | 'groceries' | 'journal' | 'account';
@@ -80,8 +83,19 @@ const TABS: { id: Tab; icon: string; label: string }[] = [
 export default function App() {
   const { user, loading, logout } = useAuth();
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
+  const [summary, setSummary] = useState<SummaryData | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(true);
   const today = new Date().toISOString().split('T')[0];
   const activeMeta = TAB_META[activeTab];
+
+  useEffect(() => {
+    if (!user) return;
+    setSummaryLoading(true);
+    api.get(`/summary/${today}`)
+      .then(res => setSummary(res.data))
+      .catch(() => setSummary(null))
+      .finally(() => setSummaryLoading(false));
+  }, [user, activeTab, today]);
 
   if (loading) {
     return <div className="app-loading">Loading LifeLog…</div>;
@@ -128,21 +142,17 @@ export default function App() {
           <p className="hero-description">{activeMeta.description}</p>
         </div>
 
-        <div className="hero-graphic" aria-hidden="true">
-          <div className="hero-graphic-panel top">
-            <span className="spark" />
-            <span className="spark" />
-            <span className="spark wide" />
-          </div>
-          <div className="hero-graphic-panel middle">
-            <span className="pulse-ring" />
-            <span className="pulse-ring small" />
-          </div>
-          <div className="hero-graphic-panel bottom">
-            <span className="mini-dot warm" />
-            <span className="mini-dot cool" />
-            <span className="mini-line" />
-          </div>
+        <div className="hero-stat" title="Today's task progress">
+          {summaryLoading ? (
+            <span className="hero-stat-loading">…</span>
+          ) : (
+            <>
+              <ScoreRing score={summary?.tasks.productivityScore ?? 0} color="#59c3ff" size={70} />
+              <span className="hero-stat-caption">
+                {summary ? `${summary.tasks.completed}/${summary.tasks.total} tasks` : 'No data yet'}
+              </span>
+            </>
+          )}
         </div>
       </header>
 
@@ -162,7 +172,7 @@ export default function App() {
       </div>
 
       <main className="content">
-        {activeTab === 'dashboard' && <Dashboard />}
+        {activeTab === 'dashboard' && <Dashboard data={summary} loading={summaryLoading} />}
         {activeTab === 'agenda' && <AgendaView date={today} />}
         {activeTab === 'habits' && <HabitPanel date={today} />}
         {activeTab === 'health' && (

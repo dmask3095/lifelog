@@ -19,8 +19,6 @@ export default function HealthPanel({ date }: Props) {
 
   return (
     <div className="panel">
-      <h2>Health Log</h2>
-
       <div className="log-section">
         <label>💧 Water intake (ml)</label>
         <div className="water-controls">

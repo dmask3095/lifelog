@@ -52,7 +52,6 @@ export default function TimePanel({ date }: Props) {
 
   return (
     <div className="panel">
-      <h2>Time Log</h2>
       {loading && <p style={{ color: '#6f829a', fontSize: 13 }}>Loading your saved timing...</p>}
       {categories.map(cat => (
         <div key={cat.key} className="log-section" style={{ borderLeft: `3px solid ${cat.color}` }}>

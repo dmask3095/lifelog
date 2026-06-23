@@ -21,7 +21,7 @@ router.post('/', async (req: Request, res: Response) => {
 });
 
 router.get('/', async (req: Request, res: Response) => {
-  const entries = await db.all('SELECT date, substr(content,1,100) as preview, updated_at FROM journal_entries WHERE user_id = ? ORDER BY date DESC', req.userId);
+  const entries = await db.all('SELECT date, content, updated_at FROM journal_entries WHERE user_id = ? ORDER BY date DESC', req.userId);
   res.json(entries);
 });
 

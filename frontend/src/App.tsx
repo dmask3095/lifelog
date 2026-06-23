@@ -1,11 +1,8 @@
 import { useState, useEffect } from 'react';
 import AgendaView from './components/AgendaView';
-import HealthPanel from './components/HealthPanel';
-import TimePanel from './components/TimePanel';
-import BodyPanel from './components/BodyPanel';
+import HealthHub from './components/HealthHub';
 import Dashboard from './components/Dashboard';
 import HabitPanel from './components/HabitPanel';
-import MoodPanel from './components/MoodPanel';
 import JournalPanel from './components/JournalPanel';
 import GroceriesPanel from './components/GroceriesPanel';
 import AuthScreen from './components/AuthScreen';
@@ -85,7 +82,11 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [summary, setSummary] = useState<SummaryData | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(true);
-  const today = new Date().toISOString().split('T')[0];
+  // toISOString() converts to UTC first, which silently rolls "today" back a day
+  // for any timezone ahead of UTC during the early hours of the local day. Build
+  // the date string from local getters instead so it matches the user's own clock.
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   const activeMeta = TAB_META[activeTab];
 
   useEffect(() => {
@@ -175,14 +176,7 @@ export default function App() {
         {activeTab === 'dashboard' && <Dashboard data={summary} loading={summaryLoading} />}
         {activeTab === 'agenda' && <AgendaView date={today} />}
         {activeTab === 'habits' && <HabitPanel date={today} />}
-        {activeTab === 'health' && (
-          <div className="panel">
-            <HealthPanel date={today} />
-            <TimePanel date={today} />
-            <BodyPanel date={today} />
-            <MoodPanel date={today} />
-          </div>
-        )}
+        {activeTab === 'health' && <HealthHub date={today} />}
         {activeTab === 'groceries' && <GroceriesPanel />}
         {activeTab === 'journal' && <JournalPanel date={today} />}
         {activeTab === 'account' && <AccountPanel />}

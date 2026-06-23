@@ -286,8 +286,9 @@ export default function AgendaView({ date }: Props) {
       <div style={{ display: 'flex', gap: 8 }}>
         <input value={title} onChange={e => setTitle(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && handleAdd()}
-          placeholder="Add a task..." className="input" style={{ flex: 1 }} />
-        <select value={priority} onChange={e => setPriority(e.target.value as Task['priority'])} className="select">
+          placeholder="Add a task..." className="input" style={{ flex: 1, minWidth: 0 }} />
+        <select value={priority} onChange={e => setPriority(e.target.value as Task['priority'])}
+          className="select" style={{ flexShrink: 0, width: 150 }}>
           <option value="urgent">🔴 Urgent</option>
           <option value="high">🟠 High</option>
           <option value="medium">🔵 Medium</option>

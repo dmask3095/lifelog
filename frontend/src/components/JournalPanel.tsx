@@ -43,6 +43,8 @@ type Mode = 'write' | 'all';
 export default function JournalPanel({ date }: Props) {
   const [mode, setMode] = useState<Mode>('write');
   const [content, setContent] = useState('');
+  const [existingContent, setExistingContent] = useState<string | null>(null);
+  const [noteCountToday, setNoteCountToday] = useState(0);
   const [saved, setSaved] = useState(false);
   const [lastSaved, setLastSaved] = useState('');
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -58,14 +60,30 @@ export default function JournalPanel({ date }: Props) {
   };
 
   useEffect(() => {
+    setContent('');
+    setExistingContent(null);
+    setNoteCountToday(0);
     api.get(`/journal/${date}`)
-      .then(res => { if (res.data) { setContent(res.data.content); setLastSaved(res.data.updated_at); } })
+      .then(res => {
+        if (res.data) {
+          setExistingContent(res.data.content);
+          setLastSaved(res.data.updated_at);
+          setNoteCountToday(res.data.content.split('\n\n').length);
+        }
+      })
       .catch(() => {});
     fetchEntries();
   }, [date]);
 
   const save = async () => {
-    await api.post('/journal', { date, content });
+    const timeLabel = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    const note = `${timeLabel}\n${content.trim()}`;
+    const fullContent = existingContent ? `${existingContent}\n\n${note}` : note;
+
+    await api.post('/journal', { date, content: fullContent });
+    setExistingContent(fullContent);
+    setNoteCountToday(n => n + 1);
+    setContent('');
     setSaved(true);
     setLastSaved(new Date().toLocaleTimeString());
     fetchEntries();
@@ -96,9 +114,15 @@ export default function JournalPanel({ date }: Props) {
             <p style={{ fontSize: 15, color: '#bbb', fontStyle: 'italic', lineHeight: 1.6 }}>{prompt}</p>
           </div>
 
+          {noteCountToday > 0 && (
+            <p style={{ fontSize: 12, color: '#6f829a' }}>
+              You've already written {noteCountToday} note{noteCountToday === 1 ? '' : 's'} today — this adds another, it won't overwrite them.
+            </p>
+          )}
+
           <textarea
             className="textarea"
-            rows={10}
+            rows={8}
             value={content}
             onChange={e => setContent(e.target.value)}
             placeholder="Write freely. This is just for you..."
@@ -107,7 +131,7 @@ export default function JournalPanel({ date }: Props) {
           {lastSaved && <p style={{ fontSize: 12, color: '#444', textAlign: 'right' }}>Last saved: {lastSaved}</p>}
 
           <button onClick={save} className="btn-primary" disabled={!content.trim()}>
-            {saved ? '✓ Saved!' : 'Save Entry'}
+            {saved ? '✓ Added!' : 'Add Note'}
           </button>
         </>
       ) : (

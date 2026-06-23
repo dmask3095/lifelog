@@ -26,7 +26,7 @@ interface GroceryResponse {
 type GroceryCategory = 'dairy' | 'vegetable' | 'fruit' | 'protein' | 'pantry' | 'cake' | 'sweet' | 'leftover' | 'other';
 type GroceryStorage = 'fridge' | 'freezer' | 'pantry' | 'counter' | 'unknown';
 type GroceryStatus = 'stocked' | 'cook_soon' | 'eat_asap' | 'cooked' | 'finished';
-type ViewMode = 'all' | 'urgent' | 'cook' | 'stored' | 'cooked' | 'ideas';
+type ViewMode = 'all' | 'urgent' | 'cook' | 'stored' | 'cooked';
 
 const CATEGORY_OPTIONS: Array<{ value: GroceryCategory; label: string; icon: string }> = [
   { value: 'dairy', label: 'Dairy', icon: '🥛' },
@@ -56,13 +56,12 @@ const STATUS_OPTIONS: Array<{ value: GroceryStatus; label: string; tone: string;
   { value: 'finished', label: 'Finished', tone: '#9ca3af', icon: '✅' },
 ];
 
-const VIEW_OPTIONS: Array<{ value: ViewMode; label: string; icon: string }> = [
-  { value: 'all', label: 'Everything', icon: '🧾' },
-  { value: 'urgent', label: 'Eat ASAP', icon: '🚨' },
-  { value: 'cook', label: 'Cook Soon', icon: '🔥' },
-  { value: 'stored', label: 'In Storage', icon: '🧊' },
-  { value: 'cooked', label: 'Already Cooked', icon: '🍲' },
-  { value: 'ideas', label: 'What Can I Make?', icon: '🍽' },
+const VIEW_OPTIONS: Array<{ value: ViewMode; label: string; icon: string; title: string }> = [
+  { value: 'all', label: 'Everything', icon: '🧾', title: '🧾 In your kitchen' },
+  { value: 'urgent', label: 'Eat ASAP', icon: '🚨', title: '🚨 Eat this first' },
+  { value: 'cook', label: 'Cook Soon', icon: '🔥', title: '🔥 Cook soon' },
+  { value: 'cooked', label: 'Cooked', icon: '🍲', title: '🍲 Already cooked' },
+  { value: 'stored', label: 'By Storage', icon: '🧊', title: '🧊 Stored inventory' },
 ];
 
 const EMPTY_FORM = {
@@ -79,6 +78,7 @@ export default function GroceriesPanel() {
   const [items, setItems] = useState<GroceryItem[]>([]);
   const [mealIdeas, setMealIdeas] = useState<MealIdea[]>([]);
   const [form, setForm] = useState(EMPTY_FORM);
+  const [showAddForm, setShowAddForm] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
@@ -128,6 +128,7 @@ export default function GroceriesPanel() {
         notes: form.notes.trim() || null,
       });
       setForm(EMPTY_FORM);
+      setShowAddForm(false);
       await fetchGroceries();
       setStatusMessage('Grocery saved to the kitchen roster.');
       setErrorMessage('');
@@ -189,6 +190,7 @@ export default function GroceriesPanel() {
   };
 
   const quickStatus = async (item: GroceryItem, status: GroceryStatus) => {
+    if (status === item.status) return;
     try {
       await api.patch(`/groceries/${item.id}`, { status });
       await fetchGroceries();
@@ -206,31 +208,31 @@ export default function GroceriesPanel() {
     return haystack.includes(normalizedQuery);
   });
 
-  const urgentItems = searchedItems.filter(item => item.status === 'eat_asap');
-  const cookSoonItems = searchedItems.filter(item => item.status === 'cook_soon');
-  const cookedItems = searchedItems.filter(item => item.status === 'cooked' || item.category === 'leftover');
-  const storedItems = searchedItems.filter(item => item.status !== 'finished');
+  const activeItems = searchedItems.filter(item => item.status !== 'finished');
+  const urgentItems = activeItems.filter(item => item.status === 'eat_asap');
+  const cookSoonItems = activeItems.filter(item => item.status === 'cook_soon');
+  const cookedItems = activeItems.filter(item => item.status === 'cooked' || item.category === 'leftover');
   const storageGroups = STORAGE_OPTIONS.map(option => ({
     ...option,
-    items: storedItems.filter(item => item.storage === option.value),
+    items: activeItems.filter(item => item.storage === option.value),
   }));
 
-  const visibleSections = {
-    ideas: viewMode === 'all' || viewMode === 'ideas',
-    urgent: viewMode === 'all' || viewMode === 'urgent',
-    cook: viewMode === 'all' || viewMode === 'cook',
-    cooked: viewMode === 'all' || viewMode === 'cooked',
-    stored: viewMode === 'all' || viewMode === 'stored',
-  };
+  const listForView: GroceryItem[] = {
+    all: activeItems,
+    urgent: urgentItems,
+    cook: cookSoonItems,
+    cooked: cookedItems,
+    stored: [],
+  }[viewMode];
 
   const activeCount = items.filter(item => item.status !== 'finished').length;
+  const currentView = VIEW_OPTIONS.find(v => v.value === viewMode)!;
 
   const renderMeta = (item: GroceryItem) => {
     const amount = item.quantity !== null && item.quantity !== undefined
       ? `${item.quantity}${item.unit ? ` ${item.unit}` : ''}`
       : 'Qty not set';
     const storage = STORAGE_OPTIONS.find(option => option.value === item.storage);
-    const status = STATUS_OPTIONS.find(option => option.value === item.status);
     const category = CATEGORY_OPTIONS.find(option => option.value === item.category);
 
     return (
@@ -238,9 +240,6 @@ export default function GroceriesPanel() {
         <span className="grocery-tag">{category?.icon} {category?.label ?? item.category}</span>
         <span className="grocery-tag">{amount}</span>
         <span className="grocery-tag">{storage?.icon} {storage?.label ?? item.storage}</span>
-        <span className="grocery-tag" style={{ color: status?.tone ?? '#dfe8f5' }}>
-          {status?.icon} {status?.label ?? item.status}
-        </span>
       </div>
     );
   };
@@ -296,6 +295,7 @@ export default function GroceriesPanel() {
 
   const renderItem = (item: GroceryItem) => {
     const isEditing = editingId === item.id;
+    const status = STATUS_OPTIONS.find(option => option.value === item.status);
 
     return (
       <div key={item.id} className="grocery-item-card">
@@ -311,11 +311,15 @@ export default function GroceriesPanel() {
               </div>
             </div>
             <div className="grocery-actions">
+              <select
+                className="select"
+                style={{ width: 'auto', flex: '1 1 140px', color: status?.tone }}
+                value={item.status}
+                onChange={e => quickStatus(item, e.target.value as GroceryStatus)}
+              >
+                {STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.icon} {option.label}</option>)}
+              </select>
               <button className="btn-sm blue" onClick={() => startEdit(item)}>Edit</button>
-              <button className="btn-sm orange" onClick={() => quickStatus(item, 'cook_soon')}>Cook Soon</button>
-              <button className="btn-sm red" onClick={() => quickStatus(item, 'eat_asap')}>Eat ASAP</button>
-              <button className="btn-sm green" onClick={() => quickStatus(item, 'cooked')}>Cooked</button>
-              <button className="btn-sm" onClick={() => quickStatus(item, 'stocked')}>Stored</button>
               <button className="btn-sm red" onClick={() => deleteItem(item.id)}>Delete</button>
             </div>
           </>
@@ -323,20 +327,6 @@ export default function GroceriesPanel() {
       </div>
     );
   };
-
-  const renderSection = (title: string, subtitle: string, itemsForSection: GroceryItem[], emptyCopy: string) => (
-    <div className="card">
-      <div className="card-title">{title}</div>
-      <p className="grocery-section-copy">{subtitle}</p>
-      {itemsForSection.length === 0 ? (
-        <p className="grocery-empty">{emptyCopy}</p>
-      ) : (
-        <div className="grocery-stack">
-          {itemsForSection.map(renderItem)}
-        </div>
-      )}
-    </div>
-  );
 
   return (
     <div className="panel">
@@ -346,7 +336,7 @@ export default function GroceriesPanel() {
           <div>
             <h2 style={{ marginBottom: 8 }}>Kitchen dashboard</h2>
             <p className="grocery-section-copy" style={{ maxWidth: 42 + 'ch' }}>
-              Track what is in the house, what needs attention, and what can become the next meal without having to mentally inventory the fridge every time.
+              Everything in the house, what needs attention, and what it can become — without the mental inventory.
             </p>
           </div>
           <div className="grocery-stat-grid">
@@ -374,144 +364,130 @@ export default function GroceriesPanel() {
         )}
       </div>
 
-      <div className="card">
-        <div className="card-title">➕ Add grocery item</div>
-        <div className="grocery-form-grid">
-          <input
-            className="input"
-            value={form.name}
-            onChange={e => updateForm('name', e.target.value)}
-            placeholder="Milk, strawberries, cake slice, leftover curry..."
-          />
-          <div className="grocery-two-col">
-            <select className="select" value={form.category} onChange={e => updateForm('category', e.target.value)}>
-              {CATEGORY_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.icon} {option.label}</option>)}
-            </select>
-            <select className="select" value={form.storage} onChange={e => updateForm('storage', e.target.value)}>
-              {STORAGE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.icon} {option.label}</option>)}
-            </select>
-          </div>
-          <div className="grocery-two-col">
+      {!showAddForm ? (
+        <button className="btn-primary" onClick={() => setShowAddForm(true)}>+ Add Grocery Item</button>
+      ) : (
+        <div className="card">
+          <div className="card-title">➕ Add grocery item</div>
+          <div className="grocery-form-grid">
             <input
               className="input"
-              type="number"
-              min={0}
-              step="0.5"
-              value={form.quantity}
-              onChange={e => updateForm('quantity', e.target.value)}
-              placeholder="Quantity"
+              value={form.name}
+              onChange={e => updateForm('name', e.target.value)}
+              placeholder="Milk, strawberries, cake slice, leftover curry..."
+              autoFocus
             />
+            <div className="grocery-two-col">
+              <select className="select" value={form.category} onChange={e => updateForm('category', e.target.value)}>
+                {CATEGORY_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.icon} {option.label}</option>)}
+              </select>
+              <select className="select" value={form.storage} onChange={e => updateForm('storage', e.target.value)}>
+                {STORAGE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.icon} {option.label}</option>)}
+              </select>
+            </div>
+            <div className="grocery-two-col">
+              <input
+                className="input"
+                type="number"
+                min={0}
+                step="0.5"
+                value={form.quantity}
+                onChange={e => updateForm('quantity', e.target.value)}
+                placeholder="Quantity"
+              />
+              <input
+                className="input"
+                value={form.unit}
+                onChange={e => updateForm('unit', e.target.value)}
+                placeholder="litres, pcs, bowls..."
+              />
+            </div>
+            <select className="select" value={form.status} onChange={e => updateForm('status', e.target.value)}>
+              {STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.icon} {option.label}</option>)}
+            </select>
             <input
               className="input"
-              value={form.unit}
-              onChange={e => updateForm('unit', e.target.value)}
-              placeholder="litres, pcs, bowls..."
+              value={form.notes}
+              onChange={e => updateForm('notes', e.target.value)}
+              placeholder="Opened today, ripe tomorrow, best with tea..."
             />
-          </div>
-          <select className="select" value={form.status} onChange={e => updateForm('status', e.target.value)}>
-            {STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.icon} {option.label}</option>)}
-          </select>
-          <input
-            className="input"
-            value={form.notes}
-            onChange={e => updateForm('notes', e.target.value)}
-            placeholder="Opened today, ripe tomorrow, best with tea..."
-          />
-          <button onClick={handleAdd} className="btn-primary" disabled={saving || !form.name.trim()}>
-            {saving ? 'Adding item...' : 'Add Grocery Item'}
-          </button>
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="card-title">🧭 Browse your kitchen</div>
-        <div className="grocery-toolbar">
-          <input
-            className="input"
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            placeholder="Search milk, fruit, cake, leftovers..."
-          />
-          <div className="grocery-view-row">
-            {VIEW_OPTIONS.map(option => (
-              <button
-                key={option.value}
-                className={`grocery-view-chip ${viewMode === option.value ? 'active' : ''}`}
-                onClick={() => setViewMode(option.value)}
-              >
-                <span>{option.icon}</span>
-                <span>{option.label}</span>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={handleAdd} className="btn-primary" disabled={saving || !form.name.trim()}>
+                {saving ? 'Adding item...' : 'Add Grocery Item'}
               </button>
+              <button onClick={() => { setShowAddForm(false); setForm(EMPTY_FORM); }} className="btn-sm">Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {mealIdeas.length > 0 && (
+        <div className="card">
+          <div className="card-title">🍽 What can I cook?</div>
+          <div className="grocery-ideas-grid">
+            {mealIdeas.slice(0, 2).map(idea => (
+              <div key={idea.title} className="grocery-idea-card">
+                <div className="grocery-item-title">{idea.title}</div>
+                <div className="grocery-item-note" style={{ marginTop: 6 }}>{idea.why}</div>
+                {idea.uses.length > 0 && (
+                  <div className="grocery-tags" style={{ marginTop: 10 }}>
+                    {idea.uses.map(use => <span key={use} className="grocery-tag">{use}</span>)}
+                  </div>
+                )}
+              </div>
             ))}
           </div>
         </div>
+      )}
+
+      <div className="grocery-view-row">
+        {VIEW_OPTIONS.map(option => (
+          <button
+            key={option.value}
+            className={`grocery-view-chip ${viewMode === option.value ? 'active' : ''}`}
+            onClick={() => setViewMode(option.value)}
+          >
+            <span>{option.icon}</span>
+            <span>{option.label}</span>
+          </button>
+        ))}
       </div>
 
-      {visibleSections.ideas && (
+      <input
+        className="input"
+        value={query}
+        onChange={e => setQuery(e.target.value)}
+        placeholder="Search milk, fruit, cake, leftovers..."
+      />
+
+      {loading ? (
+        <p className="grocery-empty">Loading kitchen inventory...</p>
+      ) : viewMode === 'stored' ? (
         <div className="card">
-          <div className="card-title">🍽 What can I cook?</div>
-          <p className="grocery-section-copy">Quick ideas generated from what is currently in the kitchen.</p>
-          {mealIdeas.length === 0 ? (
-            <p className="grocery-empty">Add a few groceries and this section will start pitching dinner like an eager sous-chef.</p>
-          ) : (
-            <div className="grocery-ideas-grid">
-              {mealIdeas.map(idea => (
-                <div key={idea.title} className="grocery-idea-card">
-                  <div className="grocery-item-title">{idea.title}</div>
-                  <div className="grocery-item-note" style={{ marginTop: 6 }}>{idea.why}</div>
-                  {idea.uses.length > 0 && (
-                    <div className="grocery-tags" style={{ marginTop: 10 }}>
-                      {idea.uses.map(use => <span key={use} className="grocery-tag">{use}</span>)}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
+          <div className="card-title">{currentView.title}</div>
+          <div className="grocery-storage-grid">
+            {storageGroups.map(group => (
+              <div key={group.value} className="grocery-storage-card">
+                <div className="grocery-storage-title">{group.icon} {group.label}</div>
+                {group.items.length === 0 ? (
+                  <p className="grocery-empty" style={{ padding: '16px 0 0' }}>Nothing here yet.</p>
+                ) : (
+                  <div className="grocery-stack">
+                    {group.items.map(renderItem)}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
-      )}
-
-      {visibleSections.urgent && renderSection(
-        '🚨 Eat this first',
-        'Things that should be used before they become a sad science experiment.',
-        urgentItems,
-        'Nothing urgent right now. Your fridge is being surprisingly cooperative.',
-      )}
-
-      {visibleSections.cook && renderSection(
-        '🔥 Cook soon',
-        'Ingredients that are still fine, but they are starting to raise an eyebrow.',
-        cookSoonItems,
-        'Nothing in the “cook soon” lane right now.',
-      )}
-
-      {visibleSections.cooked && renderSection(
-        '🍲 Already cooked',
-        'Leftovers, prepared dishes, and things that are one reheat away from being useful.',
-        cookedItems,
-        'No cooked items tracked yet.',
-      )}
-
-      {visibleSections.stored && (
+      ) : (
         <div className="card">
-          <div className="card-title">🧊 Stored inventory</div>
-          <p className="grocery-section-copy">Everything that is hanging out in storage and still ready for future-you.</p>
-          {loading ? (
-            <p className="grocery-empty">Loading kitchen inventory...</p>
+          <div className="card-title">{currentView.title} · {listForView.length}</div>
+          {listForView.length === 0 ? (
+            <p className="grocery-empty">Nothing here right now.</p>
           ) : (
-            <div className="grocery-storage-grid">
-              {storageGroups.map(group => (
-                <div key={group.value} className="grocery-storage-card">
-                  <div className="grocery-storage-title">{group.icon} {group.label}</div>
-                  {group.items.length === 0 ? (
-                    <p className="grocery-empty" style={{ padding: '16px 0 0' }}>Nothing here yet.</p>
-                  ) : (
-                    <div className="grocery-stack">
-                      {group.items.map(renderItem)}
-                    </div>
-                  )}
-                </div>
-              ))}
+            <div className="grocery-stack">
+              {listForView.map(renderItem)}
             </div>
           )}
         </div>

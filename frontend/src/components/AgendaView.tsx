@@ -41,6 +41,12 @@ const STATUS_LABELS: Record<string, string> = {
   needs_attention: '⚠️ Needs Attention',
 };
 
+function daysOverdue(taskDate: string, today: string): number {
+  const a = new Date(taskDate + 'T00:00:00').getTime();
+  const b = new Date(today + 'T00:00:00').getTime();
+  return Math.round((b - a) / 86400000);
+}
+
 type GroupMode = 'priority' | 'status';
 
 export default function AgendaView({ date }: Props) {
@@ -162,9 +168,14 @@ export default function AgendaView({ date }: Props) {
                 textDecoration: task.status === 'completed' ? 'line-through' : 'none' }}>
                 {task.title}
               </div>
-              {groupMode === 'priority' && (
-                <div style={{ fontSize: 11, color: '#555', marginTop: 3 }}>
-                  {STATUS_LABELS[task.status]}
+              {(groupMode === 'priority' || task.date !== date) && (
+                <div style={{ fontSize: 11, color: task.date !== date ? '#ff8800' : '#555', marginTop: 3 }}>
+                  {groupMode === 'priority' && STATUS_LABELS[task.status]}
+                  {task.date !== date && (
+                    <span style={{ marginLeft: groupMode === 'priority' ? 8 : 0 }}>
+                      ⏰ {daysOverdue(task.date, date)}d overdue
+                    </span>
+                  )}
                 </div>
               )}
             </>

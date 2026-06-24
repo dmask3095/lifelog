@@ -16,8 +16,14 @@ router.get('/', async (req: Request, res: Response) => {
       ELSE 5
     END
   `;
+  // Incomplete tasks from earlier dates carry forward into "today" instead of
+  // silently disappearing once their original date has passed.
   const tasks = date
-    ? await db.all(`SELECT * FROM tasks WHERE user_id = ? AND date = ? ORDER BY ${priorityOrder}, id DESC`, req.userId, date)
+    ? await db.all(`
+        SELECT * FROM tasks
+        WHERE user_id = ? AND (date = ? OR (date < ? AND status != 'completed'))
+        ORDER BY ${priorityOrder}, date ASC, id DESC
+      `, req.userId, date, date)
     : await db.all(`SELECT * FROM tasks WHERE user_id = ? ORDER BY date DESC, ${priorityOrder}, id DESC`, req.userId);
   res.json(tasks);
 });

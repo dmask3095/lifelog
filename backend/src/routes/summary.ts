@@ -10,14 +10,19 @@ router.get('/:date', async (req: Request, res: Response) => {
   const { date } = req.params;
   const userId = req.userId;
 
+  // Matches the carry-forward behavior in routes/tasks.ts: an incomplete task from
+  // an earlier date still counts as part of "today" until it's done.
   const [tasks, hurdles, timeLogs, healthLogs, bodyLogs, groceries] = await Promise.all([
-    db.all<any>('SELECT * FROM tasks WHERE user_id = ? AND date = ?', userId, date),
+    db.all<any>(`
+      SELECT * FROM tasks
+      WHERE user_id = ? AND (date = ? OR (date < ? AND status != 'completed'))
+    `, userId, date, date),
     db.all<any>(`
       SELECT h.*, t.title as task_title
       FROM hurdles h
       JOIN tasks t ON h.task_id = t.id
-      WHERE h.user_id = ? AND t.date = ?
-    `, userId, date),
+      WHERE h.user_id = ? AND (t.date = ? OR (t.date < ? AND t.status != 'completed'))
+    `, userId, date, date),
     db.all<any>('SELECT * FROM time_logs WHERE user_id = ? AND date = ?', userId, date),
     db.all<any>('SELECT * FROM health_logs WHERE user_id = ? AND date = ?', userId, date),
     db.all<any>('SELECT * FROM body_logs WHERE user_id = ? AND date = ?', userId, date),

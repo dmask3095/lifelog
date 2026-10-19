@@ -11,3 +11,4 @@ dist
 !.vscode/extensions.json
 .idea
 .DS_Store
+.vapid.json

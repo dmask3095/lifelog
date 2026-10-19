@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { HabitTier, OmniResult, RangeData, SummaryData, Task, HabitWithStreak, Hurdle, TimeCategory } from './types';
+import type { HabitTier, OmniResult, RangeData, SummaryData, Task, HabitWithStreak, Hurdle, TimeCategory, Experiment, ExperimentSuggestion, PixelsData } from './types';
 
 const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim();
 const baseURL = configuredBaseUrl && configuredBaseUrl.length > 0
@@ -77,6 +77,24 @@ export interface JournalEntry { date: string; content: string; updated_at: strin
 export const getJournal = (date: string) => api.get<JournalEntry | null>(`/journal/${date}`);
 export const listJournal = () => api.get<JournalEntry[]>('/journal');
 export const saveJournal = (date: string, content: string) => api.post<JournalEntry>('/journal', { date, content });
+
+// ---- experiments ------------------------------------------------------------
+export const getExperiments = (today: string) => api.get<Experiment[]>('/experiments', { params: { today } });
+export const getExperimentSuggestions = () => api.get<ExperimentSuggestion[]>('/experiments/suggestions');
+export const createExperiment = (data: { title?: string; cause_kind: string; cause_ref: string; cause_min: number; effect: string; start_date: string; days: number }) =>
+  api.post<Experiment>('/experiments', data);
+export const archiveExperiment = (id: number) => api.patch(`/experiments/${id}`, { status: 'archived' });
+
+// ---- pixels -----------------------------------------------------------------
+export const getPixels = (end: string) => api.get<PixelsData>('/summary/pixels', { params: { end } });
+
+// ---- push reminders ---------------------------------------------------------
+export const getVapidKey = () => api.get<{ publicKey: string }>('/push/vapid');
+export const getPushStatus = () => api.get<Array<{ id: number; endpoint: string; reminder_hour: number; reminder_minute: number }>>('/push/status');
+export const subscribePush = (data: { subscription: unknown; reminderHour: number; reminderMinute: number; tzOffsetMinutes: number }) => api.post('/push/subscribe', data);
+export const unsubscribePush = (endpoint?: string) => api.delete('/push/subscribe', { data: { endpoint } });
+export const testPush = () => api.post<{ sent: number }>('/push/test');
+export const getHabits = () => api.get<Array<{ id: number; name: string; icon: string }>>('/habits');
 
 // ---- export -----------------------------------------------------------------
 export const exportAll = () => api.get('/export');

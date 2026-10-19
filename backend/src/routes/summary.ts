@@ -91,6 +91,19 @@ router.get('/range', async (req: Request, res: Response) => {
   });
 });
 
+// GET /api/summary/pixels?end=YYYY-MM-DD — a year of mood and completion, one cell per day.
+router.get('/pixels', async (req: Request, res: Response) => {
+  const userId = req.userId as number;
+  const end = isIsoDate(req.query.end) ? String(req.query.end) : new Date().toISOString().slice(0, 10);
+  const { days } = await loadDayPoints(db, userId, shiftDate(end, -364), end);
+  res.json({
+    start: shiftDate(end, -364),
+    end,
+    days: days.map((d) => ({ date: d.date, mood: d.mood, productivity: d.productivity, logged: d.logged })),
+    loggedDays: days.filter((d) => d.logged).length,
+  });
+});
+
 // GET /api/summary/:date — the Day dashboard.
 router.get('/:date', async (req: Request, res: Response) => {
   const userId = req.userId as number;
@@ -192,6 +205,30 @@ router.get('/:date', async (req: Request, res: Response) => {
   const insights = buildInsights(days);
   const loggedDays = days.filter((d) => d.logged).length;
 
+  // Tomorrow's plan (set by "Close the day") and On-This-Day lookbacks.
+  const tomorrowDate = shiftDate(date, 1);
+  const tomorrowTasks = await db.all<any>(
+    `SELECT id, title, priority, energy_tag, description FROM tasks
+     WHERE user_id = ? AND date = ? AND pool IN ('today','scheduled') AND status != 'completed' AND parent_task_id IS NULL
+     ORDER BY ${PRIORITY_ORDER}, id ASC`,
+    userId, tomorrowDate
+  );
+  const lookback: Array<{ label: string; date: string; mood: number | null; journal: string | null; tasksCompleted: number }> = [];
+  for (const [label, offset] of [['1 week ago', -7], ['1 month ago', -30], ['1 year ago', -365]] as Array<[string, number]>) {
+    const d = shiftDate(date, offset);
+    const [m, j, t] = await Promise.all([
+      db.get<any>('SELECT score FROM moods WHERE user_id = ? AND date = ? ORDER BY created_at DESC, id DESC LIMIT 1', userId, d),
+      db.get<any>('SELECT content FROM journal_entries WHERE user_id = ? AND date = ?', userId, d),
+      db.get<{ c: number }>("SELECT COUNT(*) AS c FROM tasks WHERE user_id = ? AND date = ? AND status = 'completed'", userId, d),
+    ]);
+    const done = Number(t?.c ?? 0);
+    if (!m && !j && done === 0) continue;
+    const snippet = j?.content
+      ? String(j.content).split('\n').filter((line: string) => line.trim() && !/^\d{1,2}:\d{2}\s*(AM|PM)?$/i.test(line.trim())).join(' ').slice(0, 160)
+      : null;
+    lookback.push({ label, date: d, mood: m ? Number(m.score) : null, journal: snippet, tasksCompleted: done });
+  }
+
   res.json({
     date,
     tasks: {
@@ -209,6 +246,8 @@ router.get('/:date', async (req: Request, res: Response) => {
     insight: insights[0] ?? null,
     insightCount: insights.length,
     loggedDays30: loggedDays,
+    tomorrow: { date: tomorrowDate, count: tomorrowTasks.length, items: tomorrowTasks },
+    lookback,
   });
 });
 

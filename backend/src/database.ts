@@ -179,6 +179,45 @@ const TABLE_SCHEMAS: Record<string, string> = {
     last_logged_date TEXT,
     UNIQUE(user_id, metric)
   `,
+  experiments: `
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    cause_kind TEXT NOT NULL CHECK(cause_kind IN ('habit','time','tag')),
+    cause_ref TEXT NOT NULL,
+    cause_min INTEGER DEFAULT 0,
+    effect TEXT NOT NULL CHECK(effect IN ('mood','productivity','sleep','deep_work')),
+    start_date TEXT NOT NULL,
+    days INTEGER NOT NULL DEFAULT 14,
+    status TEXT NOT NULL DEFAULT 'running',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  `,
+  push_subscriptions: `
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    endpoint TEXT NOT NULL UNIQUE,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    reminder_hour INTEGER DEFAULT 20,
+    reminder_minute INTEGER DEFAULT 30,
+    tz_offset_minutes INTEGER DEFAULT 0,
+    last_sent_date TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  `,
+  // v2.1: one energy-aware plan per user per day. `plan` is the DayPlan JSON (blocks, why, window);
+  // acceptance and the evening wrap live in their own columns so rituals never clobber block state.
+  day_plans: `
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    plan TEXT NOT NULL,
+    accepted INTEGER NOT NULL DEFAULT 0,
+    accepted_at INTEGER,
+    wrap TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, date)
+  `,
   // Retired from the UI in v2 (FreshFlow Pantry owns the kitchen); kept so existing data stays readable.
   groceries: `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -225,8 +264,11 @@ const V2_COLUMNS: Record<string, Array<{ name: string; ddl: string }>> = {
 const ALL_TABLES = [
   'tasks', 'habits', 'hurdles', 'habit_logs',
   'time_logs', 'health_logs', 'body_logs', 'moods', 'groceries',
-  'journal_entries', 'streaks',
+  'journal_entries', 'streaks', 'experiments', 'push_subscriptions',
+  'day_plans', // v2.1 energy-aware plans (additive CREATE TABLE IF NOT EXISTS)
 ];
+export const EXPERIMENT_CAUSES = ['habit', 'time', 'tag'] as const;
+export const EXPERIMENT_EFFECTS = ['mood', 'productivity', 'sleep', 'deep_work'] as const;
 
 async function hasColumn(table: string, column: string): Promise<boolean> {
   const columns = await db.all<{ name: string }>(`PRAGMA table_info(${table})`);
@@ -270,15 +312,31 @@ async function rebuildWithCanonicalSchema(table: string) {
 // ('wasted','rested','cooking','eating'), which made Deep Work, Admin, Exercise, Learning
 // and Social impossible to log. Uses plain SQL only, so it also runs on Turso.
 async function widenTimeLogCategories() {
+  // Self-heal: a previous boot that died mid-rebuild leaves the data in time_logs_v1 while
+  // CREATE TABLE IF NOT EXISTS above recreated an empty time_logs. Merge it back first.
+  if (await tableSql('time_logs_v1')) {
+    await client.batch(
+      [
+        `INSERT OR IGNORE INTO time_logs (id, user_id, date, category, minutes, note, created_at)
+           SELECT id, user_id, date, category, minutes, note, created_at FROM time_logs_v1`,
+        'DROP TABLE time_logs_v1',
+      ],
+      'write'
+    );
+  }
   const sql = await tableSql('time_logs');
   if (!sql || sql.includes('deep_work')) return;
-  await db.run('ALTER TABLE time_logs RENAME TO time_logs_v1');
-  await db.run(`CREATE TABLE time_logs (${TABLE_SCHEMAS.time_logs})`);
-  await db.run(`
-    INSERT INTO time_logs (id, user_id, date, category, minutes, note, created_at)
-      SELECT id, user_id, date, category, minutes, note, created_at FROM time_logs_v1
-  `);
-  await db.run('DROP TABLE time_logs_v1');
+  // One atomic batch (a transaction on both local SQLite and Turso): rename, recreate, copy, drop.
+  await client.batch(
+    [
+      'ALTER TABLE time_logs RENAME TO time_logs_v1',
+      `CREATE TABLE time_logs (${TABLE_SCHEMAS.time_logs})`,
+      `INSERT INTO time_logs (id, user_id, date, category, minutes, note, created_at)
+         SELECT id, user_id, date, category, minutes, note, created_at FROM time_logs_v1`,
+      'DROP TABLE time_logs_v1',
+    ],
+    'write'
+  );
 }
 
 async function applyV2Migrations() {

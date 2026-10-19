@@ -16,6 +16,10 @@ import journalRoutes from './routes/journal';
 import groceryRoutes from './routes/groceries';
 import omniRoutes from './routes/omni';
 import exportRoutes from './routes/export';
+import dayPlanRoutes from './routes/day-plans';
+import experimentRoutes from './routes/experiments';
+import pushRoutes from './routes/push';
+import { startPushScheduler } from './lib/push';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -40,6 +44,9 @@ app.use('/api/journal', journalRoutes);
 app.use('/api/groceries', groceryRoutes); // retired from the UI in v2, kept for data access
 app.use('/api/omni-log', omniRoutes);
 app.use('/api/export', exportRoutes);
+app.use('/api/day-plans', dayPlanRoutes);
+app.use('/api/experiments', experimentRoutes);
+app.use('/api/push', pushRoutes);
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'LifeLog API 2.0 is running', timestamp: new Date().toISOString() });
@@ -55,6 +62,7 @@ dbReady
     app.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`);
     });
+    if (process.env.PUSH_SCHEDULER !== 'off') startPushScheduler();
   })
   .catch((err) => {
     console.error('Failed to set up database:', err);

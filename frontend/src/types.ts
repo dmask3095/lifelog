@@ -74,6 +74,56 @@ export interface SummaryData {
   insight: Insight | null;
   insightCount: number;
   loggedDays30: number;
+  tomorrow: { date: string; count: number; items: Array<{ id: number; title: string; priority: Priority; energy_tag: EnergyTag; description: string | null }> };
+  lookback: Array<{ label: string; date: string; mood: number | null; journal: string | null; tasksCompleted: number }>;
+}
+
+export type ExperimentCause = 'habit' | 'time' | 'tag';
+export type ExperimentEffect = 'mood' | 'productivity' | 'sleep' | 'deep_work';
+
+export interface ExperimentResult {
+  daysElapsed: number;
+  daysTotal: number;
+  endDate: string;
+  withN: number;
+  withoutN: number;
+  withMean: number | null;
+  withoutMean: number | null;
+  diff: number | null;
+  unit: string;
+  verdict: 'collecting' | 'supported' | 'not_supported' | 'no_difference' | 'inconclusive';
+  summary: string;
+  causeLabel: string;
+  effectLabel: string;
+}
+
+export interface Experiment {
+  id: number;
+  title: string;
+  cause_kind: ExperimentCause;
+  cause_ref: string;
+  cause_min: number;
+  effect: ExperimentEffect;
+  start_date: string;
+  days: number;
+  status: string;
+  result: ExperimentResult;
+}
+
+export interface ExperimentSuggestion {
+  title: string;
+  cause_kind: ExperimentCause;
+  cause_ref: string;
+  cause_min: number;
+  effect: ExperimentEffect;
+  days: number;
+}
+
+export interface PixelsData {
+  start: string;
+  end: string;
+  loggedDays: number;
+  days: Array<{ date: string; mood: number | null; productivity: number | null; logged: boolean }>;
 }
 
 export interface HabitWithStreak {

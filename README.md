@@ -2,6 +2,20 @@
 
 A personal life-logging app — tasks, habits, health, groceries, and journaling in one place, installable on your phone like a native app. Built for multiple users, each with their own private, isolated account.
 
+## Local 2.1 experience upgrade
+
+Version 2.1 adds an energy-aware Today plan, self-experiments, an evening close-the-day ritual with web-push reminders, Year in Pixels and On This Day.
+
+- **Today:** capacity-led timed blocks, immediate quick-add, a morning accept action and an on-demand evening wrap.
+- **Capture:** real forms, Enter submission, optimistic task rows, retryable inline failures, and visible check-in feedback.
+- **Plan:** deterministic sleep/mood/water rules, energy tags, priorities and carry-over aging; a productive window is learned only after seven suitable logged days, otherwise 09:00–12:00 is labeled as the default.
+- **Persistence:** additive `day_plans` table, account-scoped `/api/day-plans` routes, idempotent block actions and saved ritual state. A started block logs actual elapsed whole minutes on Done, never the planned duration; repeated Done does not double-log.
+- **Navigation:** Today, Tasks, Habits, Insights, Journal; body signals and account/export live under More. Light/dark preference is local to the device.
+
+Preview configuration and screenshots live outside the repo in `/workspace/lifelog-preview/state.json`. The API must be restarted after backend source edits; Vite updates the frontend. Preview background push delivery is explicitly disabled.
+
+Implementation contract: [`notes/v2.1-planner-contract.md`](notes/v2.1-planner-contract.md). Verification: [`notes/v2.1-verification.md`](notes/v2.1-verification.md).
+
 ## Features
 
 - **📊 Day** — a daily dashboard: productivity/health/hydration/sleep scores, a task breakdown, time breakdown, and a short generated review of how the day went.
@@ -75,6 +89,8 @@ Sign up for an account in the UI — the first account created on a fresh databa
 | `COOKIE_SECURE` | Production | Set to `true` once served over HTTPS |
 | `COOKIE_SAMESITE` | Production | Set to `none` if frontend and backend are on different domains (required alongside `COOKIE_SECURE=true`) |
 | `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | Production | Leave both unset to use a local SQLite file instead |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` | Optional | Web-push keys for the evening reminder. When unset they are derived from `JWT_SECRET`, so they stay stable across deploys |
+| `PUSH_SCHEDULER` | Optional | Set to `off` to disable the evening reminder scheduler |
 
 ### Frontend environment variables
 

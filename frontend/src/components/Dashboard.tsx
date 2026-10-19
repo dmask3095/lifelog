@@ -5,10 +5,12 @@ import { fmtMinutes, formatShort, shiftDate } from '../lib/dates';
 import { getMvd, setMvd, MVD_EVENT } from '../lib/mvd';
 import { TIME_CATEGORY_META, type Insight, type RangeData, type SummaryData, type TimeCategory } from '../types';
 import type { Tab } from '../App';
+import { Activity, BarChart3, CircleDot, Lightbulb, ListChecks } from 'lucide-react';
 
 type Range = 'day' | 'week' | 'month';
 
 interface Props {
+  initialRange?: Range;
   date: string;
   today: string;
   data: SummaryData | null;
@@ -16,10 +18,11 @@ interface Props {
   onNavigate: (tab: Tab) => void;
 }
 
-function Card({ title, icon, children, className = '' }: { title: string; icon: string; children: React.ReactNode; className?: string }) {
+function Card({ title, children, className = '' }: { title: string; icon: string; children: React.ReactNode; className?: string }) {
+  const Icon = title.includes('pattern') || title.includes('moves') ? Lightbulb : title.includes('habit') || title.includes('Habit') ? Activity : title.includes('wrap') || title.includes('synthesis') ? ListChecks : title.includes('days') ? BarChart3 : CircleDot;
   return (
     <div className={`card ${className}`}>
-      <div className="card-title">{icon} {title}</div>
+      <div className="card-title"><Icon size={17} /> {title}</div>
       <div style={{ position: 'relative' }}>{children}</div>
     </div>
   );
@@ -99,7 +102,7 @@ function RangeChart({ days }: { days: RangeData['days'] }) {
         {[0, 50, 100].map((g) => (
           <g key={g}>
             <line x1={padL} x2={W - 6} y1={y(g)} y2={y(g)} stroke="rgba(255,255,255,0.08)" />
-            <text x={padL - 6} y={y(g) + 4} fontSize="10" fill="#6f829a" textAnchor="end">{g}</text>
+            <text x={padL - 6} y={y(g) + 4} fontSize="10" fill="var(--text-dim)" textAnchor="end">{g}</text>
           </g>
         ))}
         {days.map((d, i) => {
@@ -111,7 +114,7 @@ function RangeChart({ days }: { days: RangeData['days'] }) {
               {p == null && d.logged && <rect x={x} y={y(2)} width={barW} height={3} rx={1} fill="rgba(255,255,255,0.15)" />}
               {d.mood != null && <circle cx={x + barW / 2} cy={y(d.mood * 20)} r={3.2} fill="#ff9b6b" stroke="#08111f" strokeWidth={1} />}
               {(n <= 10 || i % Math.ceil(n / 10) === 0) && (
-                <text x={x + barW / 2} y={H - 6} fontSize="10" fill="#8ab7d7" textAnchor="middle">{n <= 10 ? formatShort(d.date).split(',')[0] : d.date.slice(5)}</text>
+                <text x={x + barW / 2} y={H - 6} fontSize="10" fill="var(--text-dim)" textAnchor="middle">{n <= 10 ? formatShort(d.date).split(',')[0] : d.date.slice(5)}</text>
               )}
             </g>
           );
@@ -166,7 +169,7 @@ function RangeView({ date, range }: { date: string; range: Exclude<Range, 'day'>
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Card title={`${range === 'week' ? 'Last 7 days' : 'Last 30 days'} · ${formatShort(start)} → ${formatShort(date)}`} icon="📈">
         <div className="stat-grid" style={{ marginBottom: 14 }}>
-          <div className="stat"><div className="stat-val">{t.daysLogged}<small style={{ fontSize: 12, color: '#6f829a' }}>/{t.daysInRange}</small></div><div className="stat-lab">days logged</div></div>
+          <div className="stat"><div className="stat-val">{t.daysLogged}<small style={{ fontSize: 12, color: 'var(--text-dim)' }}>/{t.daysInRange}</small></div><div className="stat-lab">days logged</div></div>
           <div className="stat"><div className="stat-val">{t.tasksCompleted}</div><div className="stat-lab">tasks done · {t.avgProductivity != null ? Math.round(t.avgProductivity) + '% avg' : 'no tasks'}</div></div>
           <div className="stat"><div className="stat-val">{t.avgSleepMinutes != null ? (t.avgSleepMinutes / 60).toFixed(1) + 'h' : '–'}</div><div className="stat-lab">avg sleep</div></div>
           <div className="stat"><div className="stat-val">{t.avgMood != null ? t.avgMood.toFixed(1) : '–'}</div><div className="stat-lab">avg mood /5</div></div>
@@ -192,7 +195,7 @@ function RangeView({ date, range }: { date: string; range: Exclude<Range, 'day'>
             const pct = h.possible > 0 ? Math.round((h.kept / h.possible) * 100) : 0;
             return (
               <div key={h.id} className="bar-row">
-                <div className="bar-head"><span>{h.icon} {h.name}</span><span style={{ color: pct >= 70 ? '#84f0c2' : pct >= 40 ? '#7dd5ff' : '#ffb28b', fontWeight: 700 }}>{h.kept}/{h.possible} · {pct}%</span></div>
+                <div className="bar-head"><span>{h.icon} {h.name}</span><span style={{ color: pct >= 70 ? 'var(--accent-ink)' : pct >= 40 ? 'var(--accent-ink)' : 'var(--accent-ink)', fontWeight: 700 }}>{h.kept}/{h.possible} · {pct}%</span></div>
                 <div className="bar-track"><div className="bar-fill" style={{ width: `${pct}%`, background: pct >= 70 ? '#7ce2b6' : pct >= 40 ? '#59c3ff' : '#ff9b6b' }} /></div>
               </div>
             );
@@ -225,7 +228,7 @@ function RangeView({ date, range }: { date: string; range: Exclude<Range, 'day'>
         ) : (
           <p className="muted" style={{ marginBottom: 10 }}>Nothing logged in this window yet. One line a day in the Omni-Bar is enough.</p>
         )}
-        <p className="insight-detail" style={{ marginBottom: 12 }}><strong style={{ color: '#9cf3cd' }}>Next {label}: </strong>{data.wrap.focus}</p>
+        <p className="insight-detail" style={{ marginBottom: 12 }}><strong style={{ color: 'var(--accent-ink)' }}>Next {label}: </strong>{data.wrap.focus}</p>
         <div className="share-box">{shareText}</div>
         <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
           <button className="btn-sm blue" onClick={copy}>{copied ? '✓ Copied' : 'Copy “my ' + label + ' in signals”'}</button>
@@ -235,8 +238,8 @@ function RangeView({ date, range }: { date: string; range: Exclude<Range, 'day'>
   );
 }
 
-export default function Dashboard({ date, today, data, loading, onNavigate }: Props) {
-  const [range, setRange] = useState<Range>('day');
+export default function Dashboard({ date, today, data, loading, onNavigate, initialRange = 'day' }: Props) {
+  const [range, setRange] = useState<Range>(initialRange);
   const recommended = data?.capacity.mvdRecommended ?? false;
   const [mvd, setMvdState] = useState(() => getMvd(date, recommended));
 
@@ -256,7 +259,7 @@ export default function Dashboard({ date, today, data, loading, onNavigate }: Pr
   return (
     <div style={{ padding: '0 0 40px' }}>
       <div className="range-tabs">
-        {(['day', 'week', 'month'] as Range[]).map((r) => (
+        {((initialRange === 'day' ? ['day', 'week', 'month'] : ['week', 'month']) as Range[]).map((r) => (
           <button key={r} className={`range-tab ${range === r ? 'active' : ''}`} onClick={() => setRange(r)}>
             {r === 'day' ? (date === today ? 'Today' : 'Day') : r === 'week' ? 'Week' : 'Month'}
           </button>
@@ -306,15 +309,15 @@ export default function Dashboard({ date, today, data, loading, onNavigate }: Pr
               <button className="stat" onClick={() => onNavigate('agenda')}>
                 <div className="stat-val">{data.tasks.total - data.tasks.completed}</div>
                 <div className="stat-lab">open tasks</div>
-                {data.tasks.overdue > 0 && <div className="stat-sub" style={{ color: '#ffb28b' }}>{data.tasks.overdue} carried over</div>}
+                {data.tasks.overdue > 0 && <div className="stat-sub" style={{ color: 'var(--accent-ink)' }}>{data.tasks.overdue} carried over</div>}
               </button>
               <button className="stat" onClick={() => onNavigate('agenda')}>
-                <div className="stat-val" style={{ color: data.hurdles.length ? '#ffb28b' : undefined }}>{data.hurdles.length}</div>
+                <div className="stat-val" style={{ color: data.hurdles.length ? 'var(--accent-ink)' : undefined }}>{data.hurdles.length}</div>
                 <div className="stat-lab">open hurdles</div>
-                {data.hurdles.length > 0 && <div className="stat-sub" style={{ color: '#ffb28b' }}>tap to unblock</div>}
+                {data.hurdles.length > 0 && <div className="stat-sub" style={{ color: 'var(--accent-ink)' }}>tap to unblock</div>}
               </button>
               <button className="stat" onClick={() => onNavigate('habits')}>
-                <div className="stat-val">{data.habits.completed}<small style={{ fontSize: 12, color: '#6f829a' }}>/{data.habits.total}</small></div>
+                <div className="stat-val">{data.habits.completed}<small style={{ fontSize: 12, color: 'var(--text-dim)' }}>/{data.habits.total}</small></div>
                 <div className="stat-lab">habits kept</div>
               </button>
               <button className="stat" onClick={() => onNavigate('health')}>
@@ -344,7 +347,7 @@ export default function Dashboard({ date, today, data, loading, onNavigate }: Pr
               {data.hurdles.map((h) => (
                 <div key={h.id} className="hurdle-row" style={{ marginBottom: 6 }}>
                   <div>
-                    <div style={{ fontSize: 11, color: '#ffb28b', fontWeight: 700 }}>{h.task_title}</div>
+                    <div style={{ fontSize: 11, color: 'var(--accent-ink)', fontWeight: 700 }}>{h.task_title}</div>
                     <div>{h.description}</div>
                   </div>
                   <button className="btn-xs orange" onClick={() => onNavigate('agenda')}>Unblock</button>

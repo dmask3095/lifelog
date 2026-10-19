@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Droplets, Clock3, Moon, Smile } from 'lucide-react';
 import FuelPanel from './FuelPanel';
 import TimePanel from './TimePanel';
 import BodyPanel from './BodyPanel';
@@ -8,11 +9,11 @@ interface Props { date: string; onChanged: () => void; }
 
 type SubTab = 'fuel' | 'time' | 'sleep' | 'mood';
 
-const SUB_TABS: { id: SubTab; icon: string; label: string }[] = [
-  { id: 'fuel', icon: '💧', label: 'Fuel' },
-  { id: 'time', icon: '⏱', label: 'Time' },
-  { id: 'sleep', icon: '😴', label: 'Sleep' },
-  { id: 'mood', icon: '😊', label: 'Mood' },
+const SUB_TABS: { id: SubTab; icon: typeof Droplets; label: string }[] = [
+  { id: 'fuel', icon: Droplets, label: 'Fuel' },
+  { id: 'time', icon: Clock3, label: 'Time' },
+  { id: 'sleep', icon: Moon, label: 'Sleep' },
+  { id: 'mood', icon: Smile, label: 'Mood' },
 ];
 
 export default function HealthHub({ date, onChanged }: Props) {
@@ -23,7 +24,7 @@ export default function HealthHub({ date, onChanged }: Props) {
       <div className="grocery-view-row" style={{ gridTemplateColumns: 'repeat(4, minmax(0, 1fr))' }}>
         {SUB_TABS.map((t) => (
           <button key={t.id} className={`grocery-view-chip ${sub === t.id ? 'active' : ''}`} onClick={() => setSub(t.id)}>
-            {t.icon} {t.label}
+            <t.icon size={16}/> {t.label}
           </button>
         ))}
       </div>

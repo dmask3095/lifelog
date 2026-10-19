@@ -5,7 +5,7 @@ import { requireAuth } from '../middleware/requireAuth';
 const router = Router();
 router.use(requireAuth);
 
-const TABLES = ['tasks', 'hurdles', 'habits', 'habit_logs', 'time_logs', 'health_logs', 'body_logs', 'moods', 'journal_entries', 'streaks', 'groceries'];
+const TABLES = ['tasks', 'hurdles', 'habits', 'habit_logs', 'time_logs', 'health_logs', 'body_logs', 'moods', 'journal_entries', 'streaks', 'groceries', 'day_plans'];
 
 // GET /api/export — everything you ever logged, as one JSON document. Free forever.
 router.get('/', async (req: Request, res: Response) => {

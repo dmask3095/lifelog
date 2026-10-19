@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { api } from '../api';
+import { useRefresh } from '../context/RefreshContext';
 
-interface Props { date: string; }
+interface Props { date: string; onChanged?: () => void; }
 
 interface BodyLog {
   id: number;
@@ -42,7 +43,8 @@ function formatDuration(minutes: number): string {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
-export default function BodyPanel({ date }: Props) {
+export default function BodyPanel({ date, onChanged }: Props) {
+  const { tick } = useRefresh();
   const [sleepStart, setSleepStart] = useState('23:00');
   const [sleepEnd, setSleepEnd] = useState('07:00');
   const [logs, setLogs] = useState<BodyLog[]>([]);
@@ -57,17 +59,20 @@ export default function BodyPanel({ date }: Props) {
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { fetchLogs(); }, [date]);
+  useEffect(() => { fetchLogs(); }, [date, tick]);
 
   const duration = sleepDurationMinutes(sleepStart, sleepEnd);
   const peeCount = logs.filter(l => l.type === 'pee').length;
 
   const logSleep = async () => {
+    // One sleep log per date: re-logging replaces last night's entry.
+    for (const existing of logs.filter(l => l.type === 'sleep')) await api.delete(`/body-logs/${existing.id}`);
     await api.post('/body-logs', {
       date, type: 'sleep', time: sleepStart, duration_minutes: duration,
     });
     setSaved('sleep');
     fetchLogs();
+    onChanged?.();
     setTimeout(() => setSaved(''), 2000);
   };
 
@@ -79,12 +84,14 @@ export default function BodyPanel({ date }: Props) {
     });
     setSaved('pee');
     fetchLogs();
+    onChanged?.();
     setTimeout(() => setSaved(''), 1500);
   };
 
   const removeLog = async (id: number) => {
     await api.delete(`/body-logs/${id}`);
     fetchLogs();
+    onChanged?.();
   };
 
   const sortedLogs = [...logs].sort((a, b) => (a.time ?? '').localeCompare(b.time ?? ''));
@@ -92,7 +99,7 @@ export default function BodyPanel({ date }: Props) {
   return (
     <div className="panel">
       <div className="log-section">
-        <label>😴 Sleep</label>
+        <label>😴 Last night’s sleep</label>
         <div className="grocery-two-col">
           <div>
             <small>Went to bed</small>

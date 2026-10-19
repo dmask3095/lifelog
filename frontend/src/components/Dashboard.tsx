@@ -1,388 +1,377 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import ScoreRing from './ScoreRing';
-import type { SummaryData, GroceryCategory } from '../types';
+import { getRange } from '../api';
+import { fmtMinutes, formatShort, shiftDate } from '../lib/dates';
+import { getMvd, setMvd, MVD_EVENT } from '../lib/mvd';
+import { TIME_CATEGORY_META, type Insight, type RangeData, type SummaryData, type TimeCategory } from '../types';
+import type { Tab } from '../App';
 
-const PRIORITY_CONFIG = {
-  urgent: { color: '#ff4444', bg: '#1a0000', label: '🔴 Urgent' },
-  high:   { color: '#ff8800', bg: '#1a0d00', label: '🟠 High' },
-  medium: { color: '#4488ff', bg: '#001833', label: '🔵 Medium' },
-  low:    { color: '#666666', bg: '#141414', label: '⚫ Low' },
-};
+type Range = 'day' | 'week' | 'month';
 
-const PRIORITY_ORDER = ['urgent', 'high', 'medium', 'low'] as const;
+interface Props {
+  date: string;
+  today: string;
+  data: SummaryData | null;
+  loading: boolean;
+  onNavigate: (tab: Tab) => void;
+}
 
-type Range = 'daily' | 'weekly' | 'monthly';
-
-function Bar({ label, minutes, color, max }: { label: string; minutes: number; color: string; max: number }) {
-  const pct = max > 0 ? Math.min(100, (minutes / max) * 100) : 0;
-  const hrs = Math.floor(minutes / 60);
-  const mins = minutes % 60;
-  const display = hrs > 0 ? `${hrs}h ${mins}m` : `${mins}m`;
+function Card({ title, icon, children, className = '' }: { title: string; icon: string; children: React.ReactNode; className?: string }) {
   return (
-    <div style={{ marginBottom: 12 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-        <span style={{ fontSize: 13, color: '#ccc' }}>{label}</span>
-        <span style={{ fontSize: 13, color, fontWeight: 600 }}>{display}</span>
-      </div>
-      <div style={{ height: 8, background: '#2a2a2a', borderRadius: 4, overflow: 'hidden' }}>
-        <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: 4, transition: 'width 1s ease' }} />
-      </div>
+    <div className={`card ${className}`}>
+      <div className="card-title">{icon} {title}</div>
+      <div style={{ position: 'relative' }}>{children}</div>
     </div>
   );
 }
 
-function Card({ title, icon, children }: { title: string; icon: string; children: React.ReactNode }) {
-  return (
-    <div style={{ background: '#161616', border: '1px solid #2a2a2a', borderRadius: 14, padding: '20px 22px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-        <span style={{ fontSize: 18 }}>{icon}</span>
-        <span style={{ fontSize: 14, fontWeight: 600, color: '#fff', textTransform: 'uppercase', letterSpacing: 1 }}>{title}</span>
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function generateAnalysis(data: SummaryData): string {
-  const { tasks, health, body, time, hurdles } = data;
-  const parts: string[] = [];
-
-  if (tasks.total === 0) {
-    parts.push("No tasks were logged today.");
-  } else {
-    const rate = tasks.productivityScore;
-    if (rate === 100) parts.push(`Exceptional day — all ${tasks.total} tasks completed.`);
-    else if (rate >= 70) parts.push(`Strong productivity at ${rate}% — ${tasks.completed} of ${tasks.total} tasks done.`);
-    else if (rate >= 40) parts.push(`Moderate day — ${tasks.completed} of ${tasks.total} tasks completed (${rate}%).`);
-    else parts.push(`Low output today — only ${tasks.completed} of ${tasks.total} tasks completed.`);
-
-    if (tasks.needsAttention > 0) parts.push(`${tasks.needsAttention} task${tasks.needsAttention > 1 ? 's' : ''} need attention.`);
-    if (hurdles.length > 0) parts.push(`${hurdles.length} hurdle${hurdles.length > 1 ? 's' : ''} blocked progress.`);
+function InsightBlock({ insight, loggedDays }: { insight: Insight | null; loggedDays: number }) {
+  if (!insight) {
+    const left = Math.max(0, 7 - loggedDays);
+    return (
+      <p className="muted">
+        {left > 0
+          ? `Patterns unlock after 7 logged days (${loggedDays}/7 so far). Keep logging sleep, mood and tasks and LifeLog will start telling you what actually moves your days.`
+          : 'No strong pattern yet. Keep logging; relationships need a few contrasting days (good sleep vs short sleep, deep-work days vs none) to show up.'}
+      </p>
+    );
   }
+  return (
+    <>
+      <div className="insight-title">
+        {insight.title}
+        <span className={`badge ${insight.confidence}`}>{insight.confidence === 'solid' ? 'solid · n=' + insight.n : 'early signal · n=' + insight.n}</span>
+      </div>
+      <p className="insight-detail">{insight.detail}</p>
+    </>
+  );
+}
 
-  const waterPct = health.waterGoalPercent;
-  if (waterPct >= 100) parts.push("Hydration goal fully met — great.");
-  else if (waterPct >= 60) parts.push(`Hydration at ${waterPct}% — slightly under goal.`);
-  else parts.push(`Low water intake at ${waterPct}% of daily goal.`);
-
-  const sleep = body.sleepHours;
-  if (sleep >= 7) parts.push(`Good sleep at ${sleep} hours.`);
-  else if (sleep >= 5) parts.push(`Sleep was ${sleep} hours — below the recommended 7.`);
-  else if (sleep > 0) parts.push(`Only ${sleep} hours of sleep logged — rest is critical.`);
-
-  const wasted = time.byCategory['wasted'] || 0;
-  if (wasted >= 120) parts.push(`${Math.round(wasted / 60)}h wasted — consider identifying what pulled your focus.`);
-  else if (wasted > 0) parts.push(`${wasted} minutes of time wasted noted.`);
-
-  if (health.fruits.length > 0) parts.push(`Ate fruits today: ${health.fruits.join(', ')}.`);
-  if (health.foodNotes.length > 0 && health.fruits.length === 0) parts.push("Food was logged but no fruits recorded.");
-  if (data.groceries.eatAsapCount > 0) parts.push(`${data.groceries.eatAsapCount} grocery item${data.groceries.eatAsapCount > 1 ? 's need' : ' needs'} to be eaten soon.`);
-  if (data.groceries.mealIdeas.length > 0) parts.push(`Kitchen idea: ${data.groceries.mealIdeas[0].title}.`);
-
-  const score = Math.round((tasks.productivityScore + health.healthScore) / 2);
-  if (score >= 80) parts.push(`Overall: strong day. Keep the momentum.`);
-  else if (score >= 50) parts.push(`Overall: decent day with room to improve.`);
-  else parts.push(`Overall: challenging day. Tomorrow is a fresh start.`);
-
+function buildReview(data: SummaryData): string {
+  const parts: string[] = [];
+  const c = data.capacity;
+  if (c.score != null) {
+    const bits = [
+      data.body.sleepHours > 0 ? `${data.body.sleepHours}h sleep` : null,
+      data.mood ? `mood ${data.mood.score}/5` : null,
+      data.health.totalWater > 0 ? `${(data.health.totalWater / 1000).toFixed(1)}L water` : null,
+    ].filter(Boolean);
+    parts.push(`Capacity ${c.score}% (${c.level}): ${bits.join(', ')}.`);
+  } else {
+    parts.push('Capacity unknown until sleep or mood is logged.');
+  }
+  if (data.tasks.total === 0) parts.push('No tasks on the board yet.');
+  else {
+    parts.push(`${data.tasks.completed} of ${data.tasks.total} tasks done (${data.tasks.productivityScore}%)${data.tasks.overdue ? `, ${data.tasks.overdue} carried over` : ''}.`);
+    if (data.hurdles.length > 0) parts.push(`${data.hurdles.length} open hurdle${data.hurdles.length > 1 ? 's' : ''}: ${data.hurdles.slice(0, 2).map((h) => `“${h.task_title}”`).join(', ')}.`);
+  }
+  if (data.habits.total > 0) {
+    const best = [...data.habits.items].sort((a, b) => b.currentStreak - a.currentStreak)[0];
+    parts.push(`Habits ${data.habits.completed}/${data.habits.total} kept${best && best.currentStreak > 1 ? `; longest live streak ${best.icon} ${best.name} at ${best.currentStreak} days` : ''}.`);
+  }
+  const dw = data.time.byCategory.deep_work ?? 0;
+  const wasted = data.time.byCategory.wasted ?? 0;
+  if (dw > 0 || wasted > 0) parts.push(`${dw > 0 ? fmtMinutes(dw) + ' deep work' : ''}${dw > 0 && wasted > 0 ? ', ' : ''}${wasted > 0 ? fmtMinutes(wasted) + ' scrolling' : ''}.`);
+  if (c.level === 'recovery') parts.push('Recovery day: two must-dos, bronze habits, early night. That is a win.');
+  else if (c.level === 'peak') parts.push('Peak day: put the hardest thing first while the tank is full.');
+  else if (c.level === 'steady') parts.push('Steady day: protect one deep-work block and let the rest be light.');
   return parts.join(' ');
 }
 
-interface Props {
-  data: SummaryData | null;
-  loading: boolean;
+function RangeChart({ days }: { days: RangeData['days'] }) {
+  const W = 600;
+  const H = 170;
+  const padL = 26;
+  const padB = 22;
+  const innerW = W - padL - 6;
+  const innerH = H - padB - 8;
+  const n = days.length;
+  const slot = innerW / n;
+  const barW = Math.max(3, slot * 0.55);
+  const y = (pct: number) => 8 + innerH - (Math.min(100, Math.max(0, pct)) / 100) * innerH;
+  const sleepPts = days.map((d, i) => (d.sleepMinutes != null ? `${padL + i * slot + slot / 2},${y((d.sleepMinutes / 600) * 100)}` : null));
+  const sleepPath = sleepPts.filter(Boolean).length > 1
+    ? sleepPts.reduce((acc, p, i) => (p ? `${acc}${acc && sleepPts[i - 1] ? 'L' : 'M'}${p}` : acc), '')
+    : '';
+  return (
+    <>
+      <svg className="chart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Task completion, sleep and mood by day">
+        {[0, 50, 100].map((g) => (
+          <g key={g}>
+            <line x1={padL} x2={W - 6} y1={y(g)} y2={y(g)} stroke="rgba(255,255,255,0.08)" />
+            <text x={padL - 6} y={y(g) + 4} fontSize="10" fill="#6f829a" textAnchor="end">{g}</text>
+          </g>
+        ))}
+        {days.map((d, i) => {
+          const x = padL + i * slot + (slot - barW) / 2;
+          const p = d.productivity;
+          return (
+            <g key={d.date}>
+              {p != null && <rect x={x} y={y(p)} width={barW} height={8 + innerH - y(p)} rx={2} fill={p >= 70 ? '#7ce2b6' : p >= 40 ? '#59c3ff' : '#ff9b6b'} opacity={0.9} />}
+              {p == null && d.logged && <rect x={x} y={y(2)} width={barW} height={3} rx={1} fill="rgba(255,255,255,0.15)" />}
+              {d.mood != null && <circle cx={x + barW / 2} cy={y(d.mood * 20)} r={3.2} fill="#ff9b6b" stroke="#08111f" strokeWidth={1} />}
+              {(n <= 10 || i % Math.ceil(n / 10) === 0) && (
+                <text x={x + barW / 2} y={H - 6} fontSize="10" fill="#8ab7d7" textAnchor="middle">{n <= 10 ? formatShort(d.date).split(',')[0] : d.date.slice(5)}</text>
+              )}
+            </g>
+          );
+        })}
+        {sleepPath && <path d={sleepPath} fill="none" stroke="#aa66ff" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />}
+      </svg>
+      <div className="chart-legend">
+        <span><i className="legend-dot" style={{ background: '#7ce2b6' }} />Task completion %</span>
+        <span><i className="legend-dot" style={{ background: '#aa66ff' }} />Sleep (10h = 100)</span>
+        <span><i className="legend-dot" style={{ background: '#ff9b6b' }} />Mood (5 = 100)</span>
+      </div>
+    </>
+  );
 }
 
-export default function Dashboard({ data, loading }: Props) {
-  const [range, setRange] = useState<Range>('daily');
-  const [openGroceryCategory, setOpenGroceryCategory] = useState<GroceryCategory | null>(null);
+function buildShareText(r: RangeData, label: string): string {
+  const t = r.totals;
+  const lines = [
+    `My ${label} in signals · LifeLog`,
+    `• ${t.tasksCompleted}/${t.tasksTotal} tasks shipped${t.avgProductivity != null ? ` (${Math.round(t.avgProductivity)}% avg completion)` : ''}`,
+    t.avgSleepMinutes != null ? `• ${(t.avgSleepMinutes / 60).toFixed(1)}h avg sleep` : null,
+    t.avgMood != null ? `• mood ${t.avgMood.toFixed(1)}/5` : null,
+    t.deepWorkMinutes > 0 ? `• ${(t.deepWorkMinutes / 60).toFixed(1)}h deep work` : null,
+    r.wrap.bestHabit ? `• best habit: ${r.wrap.bestHabit.icon} ${r.wrap.bestHabit.name} ${r.wrap.bestHabit.kept}/${r.wrap.bestHabit.possible}` : null,
+    r.wrap.topInsight ? `• pattern: ${r.wrap.topInsight.detail}` : null,
+  ].filter(Boolean);
+  return lines.join('\n');
+}
 
-  const timeMax = data ? Math.max(...Object.values(data.time.byCategory).map(Number), 60) : 60;
-  const groupedTasks = data
-    ? PRIORITY_ORDER.map(priority => ({
-        priority,
-        tasks: data.tasks.items.filter(task => task.priority === priority),
-      }))
-    : [];
+function RangeView({ date, range }: { date: string; range: Exclude<Range, 'day'> }) {
+  const [data, setData] = useState<RangeData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [copied, setCopied] = useState(false);
+  const start = shiftDate(date, range === 'week' ? -6 : -29);
+
+  useEffect(() => {
+    setLoading(true);
+    getRange(start, date).then((res) => setData(res.data)).catch(() => setData(null)).finally(() => setLoading(false));
+  }, [start, date]);
+
+  if (loading) return <p className="empty">Crunching your {range}…</p>;
+  if (!data) return <p className="empty">Could not load this range.</p>;
+
+  const t = data.totals;
+  const label = range === 'week' ? 'week' : 'month';
+  const shareText = buildShareText(data, label);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(shareText); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* no clipboard */ }
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <Card title={`${range === 'week' ? 'Last 7 days' : 'Last 30 days'} · ${formatShort(start)} → ${formatShort(date)}`} icon="📈">
+        <div className="stat-grid" style={{ marginBottom: 14 }}>
+          <div className="stat"><div className="stat-val">{t.daysLogged}<small style={{ fontSize: 12, color: '#6f829a' }}>/{t.daysInRange}</small></div><div className="stat-lab">days logged</div></div>
+          <div className="stat"><div className="stat-val">{t.tasksCompleted}</div><div className="stat-lab">tasks done · {t.avgProductivity != null ? Math.round(t.avgProductivity) + '% avg' : 'no tasks'}</div></div>
+          <div className="stat"><div className="stat-val">{t.avgSleepMinutes != null ? (t.avgSleepMinutes / 60).toFixed(1) + 'h' : '–'}</div><div className="stat-lab">avg sleep</div></div>
+          <div className="stat"><div className="stat-val">{t.avgMood != null ? t.avgMood.toFixed(1) : '–'}</div><div className="stat-lab">avg mood /5</div></div>
+          <div className="stat"><div className="stat-val">{fmtMinutes(t.deepWorkMinutes)}</div><div className="stat-lab">deep work</div></div>
+          <div className="stat"><div className="stat-val">{t.hurdles}</div><div className="stat-lab">hurdles flagged</div></div>
+        </div>
+        <RangeChart days={data.days} />
+      </Card>
+
+      {range === 'month' && (
+        <Card title="Mood pixels" icon="🟦">
+          <div className="heat">
+            {data.days.map((d) => (
+              <div key={d.date} className="heat-cell" data-mood={d.mood ?? undefined} title={`${formatShort(d.date)} · mood ${d.mood ?? 'not logged'}`} />
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {data.habitStats.length > 0 && (
+        <Card title="Habit consistency" icon="🔥">
+          {data.habitStats.map((h) => {
+            const pct = h.possible > 0 ? Math.round((h.kept / h.possible) * 100) : 0;
+            return (
+              <div key={h.id} className="bar-row">
+                <div className="bar-head"><span>{h.icon} {h.name}</span><span style={{ color: pct >= 70 ? '#84f0c2' : pct >= 40 ? '#7dd5ff' : '#ffb28b', fontWeight: 700 }}>{h.kept}/{h.possible} · {pct}%</span></div>
+                <div className="bar-track"><div className="bar-fill" style={{ width: `${pct}%`, background: pct >= 70 ? '#7ce2b6' : pct >= 40 ? '#59c3ff' : '#ff9b6b' }} /></div>
+              </div>
+            );
+          })}
+        </Card>
+      )}
+
+      <Card title={`What moves your ${label}`} icon="🧪" className="insight-card">
+        {data.insights.length === 0 ? (
+          <p className="muted">No reliable pattern in this window yet. Insights need at least 3 days on each side of a comparison (for example 3 days of 7h+ sleep and 3 shorter nights).</p>
+        ) : (
+          <div className="insight-list">
+            {data.insights.map((ins) => (
+              <div key={ins.id} className="insight-item">
+                <div className="insight-title">{ins.title}<span className={`badge ${ins.confidence}`}>{ins.confidence} · n={ins.n}</span></div>
+                <div className="insight-detail">{ins.detail}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <Card title={range === 'week' ? 'Weekly wrap' : 'Monthly synthesis'} icon="🎁" className="wrap-card">
+        {data.wrap.wins.length > 0 ? (
+          <ul className="wrap-list">
+            {data.wrap.wins.map((w) => <li key={w}>{w}</li>)}
+            {data.wrap.bestDay && <li>Best day: {formatShort(data.wrap.bestDay.date)} at {data.wrap.bestDay.productivity}% completion</li>}
+            {data.wrap.bestHabit && <li>Most consistent habit: {data.wrap.bestHabit.icon} {data.wrap.bestHabit.name} ({data.wrap.bestHabit.kept}/{data.wrap.bestHabit.possible})</li>}
+          </ul>
+        ) : (
+          <p className="muted" style={{ marginBottom: 10 }}>Nothing logged in this window yet. One line a day in the Omni-Bar is enough.</p>
+        )}
+        <p className="insight-detail" style={{ marginBottom: 12 }}><strong style={{ color: '#9cf3cd' }}>Next {label}: </strong>{data.wrap.focus}</p>
+        <div className="share-box">{shareText}</div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <button className="btn-sm blue" onClick={copy}>{copied ? '✓ Copied' : 'Copy “my ' + label + ' in signals”'}</button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+export default function Dashboard({ date, today, data, loading, onNavigate }: Props) {
+  const [range, setRange] = useState<Range>('day');
+  const recommended = data?.capacity.mvdRecommended ?? false;
+  const [mvd, setMvdState] = useState(() => getMvd(date, recommended));
+
+  useEffect(() => { setMvdState(getMvd(date, recommended)); }, [date, recommended]);
+  useEffect(() => {
+    const onEvt = () => setMvdState(getMvd(date, recommended));
+    window.addEventListener(MVD_EVENT, onEvt);
+    return () => window.removeEventListener(MVD_EVENT, onEvt);
+  }, [date, recommended]);
+
+  const timeEntries = useMemo(() => {
+    if (!data) return [] as Array<[TimeCategory, number]>;
+    return (Object.entries(data.time.byCategory) as Array<[TimeCategory, number]>).filter(([, m]) => m > 0).sort((a, b) => b[1] - a[1]);
+  }, [data]);
+  const timeMax = Math.max(60, ...timeEntries.map(([, m]) => m));
 
   return (
     <div style={{ padding: '0 0 40px' }}>
-      {/* Range selector */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 24 }}>
-        {(['daily', 'weekly', 'monthly'] as Range[]).map(r => (
-          <button key={r} onClick={() => setRange(r)} style={{
-            padding: '8px 18px', borderRadius: 20, border: 'none', cursor: 'pointer',
-            background: range === r ? '#4488ff' : '#1a1a1a',
-            color: range === r ? '#fff' : '#666',
-            fontSize: 13, fontWeight: 600, transition: 'all 0.2s',
-          }}>{r.charAt(0).toUpperCase() + r.slice(1)}</button>
+      <div className="range-tabs">
+        {(['day', 'week', 'month'] as Range[]).map((r) => (
+          <button key={r} className={`range-tab ${range === r ? 'active' : ''}`} onClick={() => setRange(r)}>
+            {r === 'day' ? (date === today ? 'Today' : 'Day') : r === 'week' ? 'Week' : 'Month'}
+          </button>
         ))}
-        {range !== 'daily' && (
-          <span style={{ color: '#555', fontSize: 13, alignSelf: 'center', marginLeft: 8 }}>
-            Weekly & monthly views coming soon — showing today's data
-          </span>
-        )}
       </div>
 
-      {loading && <p style={{ color: '#555', textAlign: 'center', padding: 40 }}>Loading your day...</p>}
+      {range !== 'day' && <RangeView date={date} range={range} />}
 
-      {!loading && data && (
+      {range === 'day' && loading && !data && <p className="empty" style={{ padding: 40 }}>Loading your day…</p>}
+
+      {range === 'day' && data && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-
-          {/* Score rings */}
-          <Card title="Today's Scores" icon="🎯">
-            <div style={{ display: 'flex', justifyContent: 'space-around', flexWrap: 'wrap', gap: 16 }}>
-              <ScoreRing score={data.tasks.productivityScore} color="#4488ff" label="Productivity" />
-              <ScoreRing score={data.health.healthScore} color="#00cc88" label="Health" />
-              <ScoreRing score={Math.min(100, data.health.waterGoalPercent)} color="#0099ff" label="Hydration" />
-              <ScoreRing score={Math.min(100, Math.round((data.body.sleepHours / 8) * 100))} color="#aa66ff" label="Sleep" />
-            </div>
-          </Card>
-
-          {/* Tasks */}
-          <Card title="Tasks" icon="✅">
-            <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
-              {[
-                { label: 'Total', val: data.tasks.total, color: '#888' },
-                { label: 'Completed', val: data.tasks.completed, color: '#00cc88' },
-                { label: 'Ongoing', val: data.tasks.ongoing, color: '#4488ff' },
-                { label: 'Needs Attention', val: data.tasks.needsAttention, color: '#ff8800' },
-              ].map(s => (
-                <div key={s.label} style={{ flex: 1, minWidth: 80, background: '#1e1e1e', borderRadius: 10, padding: '12px 14px', textAlign: 'center' }}>
-                  <div style={{ fontSize: 22, fontWeight: 700, color: s.color }}>{s.val}</div>
-                  <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>{s.label}</div>
-                </div>
-              ))}
-            </div>
-            {data.tasks.items.length > 0 && (
-              <div style={{ display: 'grid', gap: 12 }}>
-                {groupedTasks.map(({ priority, tasks }) => {
-                  const cfg = PRIORITY_CONFIG[priority];
-                  return (
-                    <div key={priority} style={{
-                      padding: 12,
-                      borderRadius: 16,
-                      background: '#121212',
-                      border: `1px solid ${cfg.color}33`,
-                      boxShadow: `inset 0 0 0 1px ${cfg.color}12`,
-                    }}>
-                      <div style={{
-                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                        padding: '10px 14px', background: cfg.bg,
-                        borderRadius: 10, marginBottom: tasks.length > 0 ? 10 : 0,
-                        border: `1px solid ${cfg.color}33`,
-                      }}>
-                        <span style={{ fontSize: 13, fontWeight: 700, color: cfg.color }}>{cfg.label}</span>
-                        <span style={{ fontSize: 12, color: cfg.color, background: `${cfg.color}22`, padding: '2px 8px', borderRadius: 10 }}>
-                          {tasks.filter(task => task.status === 'completed').length}/{tasks.length}
-                        </span>
-                      </div>
-                      {tasks.length > 0 ? (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                          {tasks.map(task => (
-                            <div key={task.id} style={{
-                              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                              padding: '8px 12px', background: '#1e1e1e', borderRadius: 8,
-                              borderLeft: `3px solid ${task.status === 'completed' ? '#00cc88' : task.status === 'ongoing' ? '#4488ff' : task.status === 'needs_attention' ? '#ff8800' : '#444'}`
-                            }}>
-                              <span style={{ fontSize: 13, color: '#ccc' }}>{task.title}</span>
-                              <span style={{ fontSize: 11, color: '#555' }}>
-                                {task.status.replace('_', ' ')}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <div style={{
-                          minHeight: 56,
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          borderRadius: 12,
-                          border: '1px dashed #2a2a2a',
-                          color: '#555',
-                          fontSize: 13,
-                        }}>
-                          No {priority} tasks today.
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </Card>
-
-          {/* Time breakdown */}
-          <Card title="Time Breakdown" icon="⏱">
-            {Object.keys(data.time.byCategory).length === 0
-              ? <p style={{ color: '#555', fontSize: 13 }}>No time entries logged today.</p>
-              : <>
-                <Bar label="⏱ Time Wasted" minutes={data.time.byCategory['wasted'] || 0} color="#ff4444" max={timeMax} />
-                <Bar label="😴 Time Rested" minutes={data.time.byCategory['rested'] || 0} color="#aa66ff" max={timeMax} />
-                <Bar label="🍳 Cooking" minutes={data.time.byCategory['cooking'] || 0} color="#ff8800" max={timeMax} />
-                <Bar label="🍽 Eating" minutes={data.time.byCategory['eating'] || 0} color="#00cc88" max={timeMax} />
-              </>
-            }
-          </Card>
-
-          {/* Health */}
-          <Card title="Health" icon="💚">
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                <span style={{ fontSize: 13, color: '#ccc' }}>💧 Water</span>
-                <span style={{ fontSize: 13, color: '#4488ff', fontWeight: 600 }}>{data.health.totalWater}ml / 2500ml</span>
-              </div>
-              <div style={{ height: 10, background: '#2a2a2a', borderRadius: 5, overflow: 'hidden' }}>
-                <div style={{ height: '100%', width: `${data.health.waterGoalPercent}%`, background: 'linear-gradient(90deg, #4488ff, #00ccff)', borderRadius: 5, transition: 'width 1s ease' }} />
-              </div>
-            </div>
-            {data.health.fruits.length > 0 && (
-              <div style={{ marginBottom: 10, fontSize: 13, color: '#ccc' }}>
-                🍎 Fruits: <span style={{ color: '#00cc88' }}>{data.health.fruits.join(', ')}</span>
-              </div>
-            )}
-            {data.health.foodNotes.length > 0 && (
-              <div style={{ fontSize: 13, color: '#ccc' }}>
-                🥗 Food: <span style={{ color: '#aaa' }}>{data.health.foodNotes.join('; ')}</span>
-              </div>
-            )}
-          </Card>
-
-          {/* Body */}
-          <Card title="Body" icon="🛌">
-            <div style={{ display: 'flex', gap: 12 }}>
-              <div style={{ flex: 1, background: '#1e1e1e', borderRadius: 10, padding: '16px', textAlign: 'center' }}>
-                <div style={{ fontSize: 28, fontWeight: 700, color: '#aa66ff' }}>{data.body.sleepHours}h</div>
-                <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>Sleep</div>
-                <div style={{ fontSize: 11, color: data.body.sleepHours >= 7 ? '#00cc88' : '#ff8800', marginTop: 4 }}>
-                  {data.body.sleepHours >= 7 ? '✓ Goal met' : `${(7 - data.body.sleepHours).toFixed(1)}h short`}
-                </div>
-              </div>
-              <div style={{ flex: 1, background: '#1e1e1e', borderRadius: 10, padding: '16px', textAlign: 'center' }}>
-                <div style={{ fontSize: 28, fontWeight: 700, color: '#4488ff' }}>{data.body.peeCount}</div>
-                <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>Bathroom visits</div>
-                <div style={{ fontSize: 11, color: data.body.peeCount >= 6 ? '#00cc88' : '#ff8800', marginTop: 4 }}>
-                  {data.body.peeCount >= 6 ? '✓ Healthy range' : 'Drink more water'}
-                </div>
-              </div>
-            </div>
-          </Card>
-
-          {/* Groceries */}
-          <Card title="Groceries" icon="🛒">
-            <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
-              {[
-                { key: 'tracked' as GroceryCategory, label: 'Tracked', val: data.groceries.total, color: '#9fdcff' },
-                { key: 'eatAsap' as GroceryCategory, label: 'Eat ASAP', val: data.groceries.eatAsapCount, color: '#ff8a82' },
-                { key: 'cookSoon' as GroceryCategory, label: 'Cook Soon', val: data.groceries.cookSoonCount, color: '#ffbf9d' },
-                { key: 'cooked' as GroceryCategory, label: 'Cooked', val: data.groceries.cookedCount, color: '#98f2cb' },
-              ].map(s => {
-                const isOpen = openGroceryCategory === s.key;
-                return (
-                  <button
-                    key={s.key}
-                    onClick={() => setOpenGroceryCategory(isOpen ? null : s.key)}
-                    style={{
-                      flex: 1, minWidth: 80, background: isOpen ? `${s.color}1a` : '#1e1e1e',
-                      borderRadius: 10, padding: '12px 14px', textAlign: 'center', cursor: 'pointer',
-                      border: `1px solid ${isOpen ? s.color : 'transparent'}`,
-                      transition: 'all 0.15s ease',
-                    }}
-                  >
-                    <div style={{ fontSize: 22, fontWeight: 700, color: s.color }}>{s.val}</div>
-                    <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>{s.label}</div>
-                  </button>
-                );
-              })}
-            </div>
-            {openGroceryCategory && (
-              <div style={{ marginBottom: 16, padding: '10px 12px', background: '#1a1a1a', borderRadius: 10, border: '1px solid #2a2a2a' }}>
-                {data.groceries.byCategory[openGroceryCategory].length === 0 ? (
-                  <p style={{ color: '#555', fontSize: 13, margin: 0 }}>Nothing in this category right now.</p>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {data.groceries.byCategory[openGroceryCategory].map(item => (
-                      <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#ccc' }}>
-                        <span>{item.name}</span>
-                        {item.quantity != null && (
-                          <span style={{ color: '#777' }}>{item.quantity}{item.unit ? ` ${item.unit}` : ''}</span>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-            {data.groceries.eatAsapItems.length > 0 && (
-              <div style={{ marginBottom: 14 }}>
-                <div style={{ fontSize: 12, color: '#ff8a82', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 8 }}>
-                  Eat Soon
-                </div>
-                <div style={{ display: 'grid', gap: 8 }}>
-                  {data.groceries.eatAsapItems.map(item => (
-                    <div key={item.id} style={{ padding: '10px 12px', background: '#1e1e1e', borderRadius: 10, borderLeft: '3px solid #ff8a82' }}>
-                      <div style={{ fontSize: 13, color: '#edf4ff', fontWeight: 700 }}>{item.name}</div>
-                      {item.notes && <div style={{ fontSize: 12, color: '#8fa3bb', marginTop: 4 }}>{item.notes}</div>}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            {data.groceries.mealIdeas.length > 0 ? (
+          <Card title="Capacity" icon="🔋">
+            <div className="cap-card">
+              <ScoreRing score={data.capacity.score ?? 0} color={data.capacity.level === 'recovery' ? '#ff9b6b' : data.capacity.level === 'peak' ? '#7ce2b6' : data.capacity.level === 'steady' ? '#59c3ff' : '#3a4a60'} size={96} />
               <div>
-                <div style={{ fontSize: 12, color: '#98f2cb', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 8 }}>
-                  Quick Kitchen Ideas
-                </div>
-                <div style={{ display: 'grid', gap: 8 }}>
-                  {data.groceries.mealIdeas.slice(0, 2).map(idea => (
-                    <div key={idea.title} style={{ padding: '10px 12px', background: '#1e1e1e', borderRadius: 10, border: '1px solid #2a2a2a' }}>
-                      <div style={{ fontSize: 13, color: '#edf4ff', fontWeight: 700 }}>{idea.title}</div>
-                      <div style={{ fontSize: 12, color: '#8fa3bb', marginTop: 4 }}>{idea.why}</div>
-                    </div>
-                  ))}
+                <div className={`cap-level ${data.capacity.level}`}>{data.capacity.level === 'unknown' ? 'Not enough signal' : `${data.capacity.level} day`}</div>
+                <div className="cap-headline">{data.capacity.headline}</div>
+                <div className="cap-signals">
+                  <span className={`chip small clickable ${data.capacity.signals.sleep ? 'tone-ok' : 'tone-muted'}`} onClick={() => onNavigate('health')}>😴 {data.capacity.signals.sleep ? `${data.body.sleepHours}h sleep` : 'log sleep'}</span>
+                  <span className={`chip small clickable ${data.capacity.signals.mood ? 'tone-ok' : 'tone-muted'}`} onClick={() => onNavigate('health')}>😊 {data.capacity.signals.mood ? `mood ${data.mood?.score}/5` : 'log mood'}</span>
+                  <span className={`chip small clickable ${data.capacity.signals.water ? 'tone-ok' : 'tone-muted'}`} onClick={() => onNavigate('health')}>💧 {data.capacity.signals.water ? `${data.health.totalWater} ml` : 'log water'}</span>
                 </div>
               </div>
-            ) : (
-              <p style={{ color: '#555', fontSize: 13 }}>No grocery ideas yet. Add a few kitchen items and they will show up here.</p>
+            </div>
+            <div className={`mvd-toggle ${mvd ? 'on' : ''}`}>
+              <div>
+                <strong>Minimum Viable Day {mvd ? 'is on' : data.capacity.mvdRecommended ? 'recommended' : ''}</strong>
+                <span>{mvd ? 'Tasks show your top 2 only; habits drop to their bronze floor.' : 'Low-capacity days get a smaller, kinder plan. Flip it on anytime.'}</span>
+              </div>
+              <button type="button" className={`switch ${mvd ? 'on' : ''}`} aria-label="Toggle Minimum Viable Day" onClick={() => { setMvd(date, !mvd); setMvdState(!mvd); }} />
+            </div>
+          </Card>
+
+          <Card title="Today’s scores" icon="🎯">
+            <div className="rings-row">
+              <ScoreRing score={data.tasks.productivityScore} color="#59c3ff" label="Tasks" size={78} />
+              <ScoreRing score={data.habits.pct} color="#ffbf5e" label="Habits" size={78} />
+              <ScoreRing score={data.health.healthScore} color="#7ce2b6" label="Health" size={78} />
+              <ScoreRing score={data.health.waterGoalPercent} color="#0099ff" label="Water" size={78} />
+              <ScoreRing score={data.body.sleepPercent} color="#aa66ff" label="Sleep" size={78} />
+            </div>
+          </Card>
+
+          <Card title="Right now" icon="⚡">
+            <div className="stat-grid">
+              <button className="stat" onClick={() => onNavigate('agenda')}>
+                <div className="stat-val">{data.tasks.total - data.tasks.completed}</div>
+                <div className="stat-lab">open tasks</div>
+                {data.tasks.overdue > 0 && <div className="stat-sub" style={{ color: '#ffb28b' }}>{data.tasks.overdue} carried over</div>}
+              </button>
+              <button className="stat" onClick={() => onNavigate('agenda')}>
+                <div className="stat-val" style={{ color: data.hurdles.length ? '#ffb28b' : undefined }}>{data.hurdles.length}</div>
+                <div className="stat-lab">open hurdles</div>
+                {data.hurdles.length > 0 && <div className="stat-sub" style={{ color: '#ffb28b' }}>tap to unblock</div>}
+              </button>
+              <button className="stat" onClick={() => onNavigate('habits')}>
+                <div className="stat-val">{data.habits.completed}<small style={{ fontSize: 12, color: '#6f829a' }}>/{data.habits.total}</small></div>
+                <div className="stat-lab">habits kept</div>
+              </button>
+              <button className="stat" onClick={() => onNavigate('health')}>
+                <div className="stat-val">{data.mood ? ['😞', '😕', '😐', '😊', '🤩'][data.mood.score - 1] : '–'}</div>
+                <div className="stat-lab">{data.mood ? `mood ${data.mood.score}/5` : 'no mood yet'}</div>
+              </button>
+              <button className="stat" onClick={() => onNavigate('health')}>
+                <div className="stat-val">{data.time.totalMinutes > 0 ? fmtMinutes(data.time.byCategory.deep_work ?? 0) : '–'}</div>
+                <div className="stat-lab">deep work</div>
+              </button>
+              <button className="stat" onClick={() => onNavigate('journal')}>
+                <div className="stat-val">{data.journal.noteCount}</div>
+                <div className="stat-lab">journal notes</div>
+              </button>
+            </div>
+          </Card>
+
+          <Card title="Your pattern" icon="🧪" className="insight-card">
+            <InsightBlock insight={data.insight} loggedDays={data.loggedDays30} />
+            {data.insightCount > 1 && (
+              <button className="btn-sm blue" style={{ marginTop: 12 }} onClick={() => setRange('month')}>See all {data.insightCount} patterns</button>
             )}
           </Card>
 
-          {/* Hurdles */}
           {data.hurdles.length > 0 && (
             <Card title="Hurdles" icon="⚠️">
-              {data.hurdles.map((h: any) => (
-                <div key={h.id} style={{ padding: '10px 12px', background: '#1e1e1e', borderRadius: 8, marginBottom: 6, borderLeft: '3px solid #ff8800' }}>
-                  <div style={{ fontSize: 11, color: '#ff8800', marginBottom: 3 }}>{h.task_title}</div>
-                  <div style={{ fontSize: 13, color: '#ccc' }}>{h.description}</div>
+              {data.hurdles.map((h) => (
+                <div key={h.id} className="hurdle-row" style={{ marginBottom: 6 }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: '#ffb28b', fontWeight: 700 }}>{h.task_title}</div>
+                    <div>{h.description}</div>
+                  </div>
+                  <button className="btn-xs orange" onClick={() => onNavigate('agenda')}>Unblock</button>
                 </div>
               ))}
             </Card>
           )}
 
-          {/* AI Analysis */}
-          <Card title="Day Review" icon="🧠">
-            <p style={{ fontSize: 14, color: '#bbb', lineHeight: 1.8, margin: 0 }}>
-              {generateAnalysis(data)}
-            </p>
-            <div style={{ marginTop: 16, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-              {[
-                { label: `${data.tasks.productivityScore >= 70 ? '🔥' : '📈'} Productivity`, val: `${data.tasks.productivityScore}%`, color: '#4488ff' },
-                { label: `${data.health.healthScore >= 70 ? '💪' : '⚠️'} Health`, val: `${data.health.healthScore}%`, color: '#00cc88' },
-                { label: '😴 Sleep', val: `${data.body.sleepHours}h`, color: '#aa66ff' },
-              ].map(badge => (
-                <div key={badge.label} style={{ padding: '6px 14px', background: '#1e1e1e', borderRadius: 20, border: `1px solid ${badge.color}33` }}>
-                  <span style={{ fontSize: 12, color: '#888' }}>{badge.label}: </span>
-                  <span style={{ fontSize: 12, color: badge.color, fontWeight: 600 }}>{badge.val}</span>
+          {timeEntries.length > 0 && (
+            <Card title="Where the time went" icon="⏱">
+              {timeEntries.map(([cat, minutes]) => (
+                <div key={cat} className="bar-row">
+                  <div className="bar-head"><span>{TIME_CATEGORY_META[cat].icon} {TIME_CATEGORY_META[cat].label}</span><span style={{ color: TIME_CATEGORY_META[cat].color, fontWeight: 700 }}>{fmtMinutes(minutes)}</span></div>
+                  <div className="bar-track"><div className="bar-fill" style={{ width: `${(minutes / timeMax) * 100}%`, background: TIME_CATEGORY_META[cat].color }} /></div>
                 </div>
               ))}
-            </div>
-          </Card>
+            </Card>
+          )}
 
+          <Card title="Day review" icon="🧠">
+            <p className="review-text">{buildReview(data)}</p>
+          </Card>
         </div>
       )}
 
-      {!loading && !data && (
-        <p style={{ color: '#555', textAlign: 'center', padding: 40 }}>No data found for today.</p>
+      {range === 'day' && !loading && !data && (
+        <p className="empty" style={{ padding: 40 }}>Could not load this day. Is the API running?</p>
       )}
     </div>
   );

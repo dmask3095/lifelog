@@ -1,20 +1,16 @@
-import { useState, useEffect } from 'react';
-import { api } from '../api';
+import { useEffect, useState } from 'react';
+import { getJournal, listJournal, saveJournal, type JournalEntry } from '../api';
+import { useRefresh } from '../context/RefreshContext';
+import type { SummaryData } from '../types';
 
-interface Props { date: string; }
-
-interface Entry {
-  date: string;
-  content: string;
-  updated_at: string;
-}
+interface Props { date: string; summary: SummaryData | null; }
 
 const PROMPTS = [
   "What's one thing you're proud of today?",
-  "What could tomorrow look like if you tried 10% harder?",
-  "What drained your energy today — and can you reduce it?",
+  'What could tomorrow look like if you tried 10% harder?',
+  'What drained your energy today, and can you reduce it?',
   "What's one thing you learned today?",
-  "Who or what are you grateful for right now?",
+  'Who or what are you grateful for right now?',
 ];
 
 function formatDate(dateStr: string) {
@@ -38,51 +34,61 @@ function currentStreak(datesDesc: string[]): number {
   return streak;
 }
 
+// Prompts anchored in the day's real data: never the same loop twice.
+function groundedPrompt(s: SummaryData | null, fallback: string): { text: string; source: string } {
+  if (!s) return { text: fallback, source: '' };
+  const hurdle = s.hurdles[0];
+  if (hurdle) return { text: `You flagged “${hurdle.description}” on “${hurdle.task_title}”. What is the smallest next move, and what would make it 10% easier?`, source: 'from today’s hurdles' };
+  if (s.tasks.completed >= 3 && s.body.sleepHours > 0 && s.body.sleepHours < 6) return { text: `You shipped ${s.tasks.completed} tasks on ${s.body.sleepHours}h of sleep. What did that cost, and what would tonight’s version of you want?`, source: 'from tasks + sleep' };
+  if (s.capacity.level === 'recovery') return { text: 'Capacity is low today. What is the one thing that would make today feel like enough?', source: 'from your capacity score' };
+  if (s.mood && s.mood.score >= 4 && s.habits.completed === s.habits.total && s.habits.total > 0) return { text: `Mood ${s.mood.score}/5 and every habit kept. What made today click, so you can repeat it on purpose?`, source: 'from mood + habits' };
+  if (s.mood && s.mood.score <= 2) return { text: `Mood ${s.mood.score}/5 today. Name the heaviest thing, then name one thing that still went okay.`, source: 'from today’s mood' };
+  if (s.insight) return { text: `LifeLog noticed: ${s.insight.detail} Does that match how it feels from the inside?`, source: 'from your patterns' };
+  if (s.tasks.completed > 0) return { text: `You finished ${s.tasks.completed} of ${s.tasks.total} tasks. Which one mattered most, and why?`, source: 'from today’s tasks' };
+  return { text: fallback, source: '' };
+}
+
 type Mode = 'write' | 'all';
 
-export default function JournalPanel({ date }: Props) {
+export default function JournalPanel({ date, summary }: Props) {
+  const { tick } = useRefresh();
   const [mode, setMode] = useState<Mode>('write');
   const [content, setContent] = useState('');
   const [existingContent, setExistingContent] = useState<string | null>(null);
   const [noteCountToday, setNoteCountToday] = useState(0);
   const [saved, setSaved] = useState(false);
   const [lastSaved, setLastSaved] = useState('');
-  const [entries, setEntries] = useState<Entry[]>([]);
+  const [entries, setEntries] = useState<JournalEntry[]>([]);
   const [entriesLoading, setEntriesLoading] = useState(true);
-  const prompt = PROMPTS[new Date().getDay() % PROMPTS.length];
+  const prompt = groundedPrompt(summary, PROMPTS[new Date(date + 'T00:00:00').getDay() % PROMPTS.length]);
 
   const fetchEntries = () => {
     setEntriesLoading(true);
-    api.get('/journal')
-      .then(res => setEntries(res.data))
-      .catch(() => setEntries([]))
-      .finally(() => setEntriesLoading(false));
+    listJournal().then((res) => setEntries(res.data)).catch(() => setEntries([])).finally(() => setEntriesLoading(false));
   };
 
   useEffect(() => {
     setContent('');
     setExistingContent(null);
     setNoteCountToday(0);
-    api.get(`/journal/${date}`)
-      .then(res => {
-        if (res.data) {
-          setExistingContent(res.data.content);
-          setLastSaved(res.data.updated_at);
-          setNoteCountToday(res.data.content.split('\n\n').length);
-        }
-      })
-      .catch(() => {});
+    setLastSaved('');
+    getJournal(date).then((res) => {
+      if (res.data) {
+        setExistingContent(res.data.content);
+        setLastSaved(res.data.updated_at);
+        setNoteCountToday(res.data.content.split('\n\n').length);
+      }
+    }).catch(() => {});
     fetchEntries();
-  }, [date]);
+  }, [date, tick]);
 
   const save = async () => {
     const timeLabel = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
     const note = `${timeLabel}\n${content.trim()}`;
     const fullContent = existingContent ? `${existingContent}\n\n${note}` : note;
-
-    await api.post('/journal', { date, content: fullContent });
+    await saveJournal(date, fullContent);
     setExistingContent(fullContent);
-    setNoteCountToday(n => n + 1);
+    setNoteCountToday((n) => n + 1);
     setContent('');
     setSaved(true);
     setLastSaved(new Date().toLocaleTimeString());
@@ -91,7 +97,7 @@ export default function JournalPanel({ date }: Props) {
   };
 
   const totalEntries = entries.length;
-  const streak = currentStreak(entries.map(e => e.date));
+  const streak = currentStreak(entries.map((e) => e.date));
   const longest = entries.reduce((max, e) => (wordCount(e.content) > wordCount(max?.content ?? '') ? e : max), entries[0]);
 
   return (
@@ -99,40 +105,34 @@ export default function JournalPanel({ date }: Props) {
       <h2>Journal</h2>
 
       <div className="grocery-view-row" style={{ gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' }}>
-        <button className={`grocery-view-chip ${mode === 'write' ? 'active' : ''}`} onClick={() => setMode('write')}>
-          ✍️ Write
-        </button>
-        <button className={`grocery-view-chip ${mode === 'all' ? 'active' : ''}`} onClick={() => setMode('all')}>
-          📖 All Entries
-        </button>
+        <button className={`grocery-view-chip ${mode === 'write' ? 'active' : ''}`} onClick={() => setMode('write')}>✍️ Write</button>
+        <button className={`grocery-view-chip ${mode === 'all' ? 'active' : ''}`} onClick={() => setMode('all')}>📖 All entries</button>
       </div>
 
       {mode === 'write' ? (
         <>
           <div className="card">
-            <div className="card-title">💭 Today's prompt</div>
-            <p style={{ fontSize: 15, color: '#bbb', fontStyle: 'italic', lineHeight: 1.6 }}>{prompt}</p>
+            <div className="card-title">💭 Today’s prompt</div>
+            <p className="prompt-grounded">{prompt.text}</p>
+            {prompt.source && <p className="prompt-src">Grounded {prompt.source}</p>}
           </div>
 
           {noteCountToday > 0 && (
-            <p style={{ fontSize: 12, color: '#6f829a' }}>
-              You've already written {noteCountToday} note{noteCountToday === 1 ? '' : 's'} today — this adds another, it won't overwrite them.
-            </p>
+            <p className="muted">You’ve written {noteCountToday} note{noteCountToday === 1 ? '' : 's'} today. This adds another; nothing gets overwritten.</p>
           )}
 
-          <textarea
-            className="textarea"
-            rows={8}
-            value={content}
-            onChange={e => setContent(e.target.value)}
-            placeholder="Write freely. This is just for you..."
-          />
+          <textarea className="textarea" rows={8} value={content} onChange={(e) => setContent(e.target.value)} placeholder="Write freely. This is just for you…" />
 
-          {lastSaved && <p style={{ fontSize: 12, color: '#444', textAlign: 'right' }}>Last saved: {lastSaved}</p>}
+          {lastSaved && <p style={{ fontSize: 12, color: '#6f829a', textAlign: 'right' }}>Last saved: {lastSaved}</p>}
 
-          <button onClick={save} className="btn-primary" disabled={!content.trim()}>
-            {saved ? '✓ Added!' : 'Add Note'}
-          </button>
+          <button onClick={save} className="btn-primary" disabled={!content.trim()}>{saved ? '✓ Added' : 'Add note'}</button>
+
+          {existingContent && (
+            <div className="card">
+              <div className="card-title">📅 Today so far</div>
+              <p style={{ fontSize: 14, color: '#dce8f7', lineHeight: 1.7, whiteSpace: 'pre-wrap', margin: 0, position: 'relative' }}>{existingContent}</p>
+            </div>
+          )}
         </>
       ) : (
         <>
@@ -150,25 +150,19 @@ export default function JournalPanel({ date }: Props) {
           )}
 
           {entriesLoading ? (
-            <p className="empty">Loading your journal...</p>
+            <p className="empty">Loading your journal…</p>
           ) : entries.length === 0 ? (
             <p className="empty">No entries yet. Write your first one above.</p>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {entries.map(e => (
+              {entries.map((e) => (
                 <div key={e.date} className="card">
                   <div className="card-title">
                     📅 {formatDate(e.date)}
-                    {longest && e.date === longest.date && totalEntries > 1 && (
-                      <span className="grocery-tag" style={{ marginLeft: 8 }}>longest entry</span>
-                    )}
+                    {longest && e.date === longest.date && totalEntries > 1 && <span className="grocery-tag" style={{ marginLeft: 8 }}>longest entry</span>}
                   </div>
-                  <p style={{ fontSize: 14, color: '#dce8f7', lineHeight: 1.7, whiteSpace: 'pre-wrap', margin: 0 }}>
-                    {e.content}
-                  </p>
-                  <p style={{ fontSize: 11, color: '#555', marginTop: 10, textAlign: 'right' }}>
-                    {wordCount(e.content)} words
-                  </p>
+                  <p style={{ fontSize: 14, color: '#dce8f7', lineHeight: 1.7, whiteSpace: 'pre-wrap', margin: 0, position: 'relative' }}>{e.content}</p>
+                  <p style={{ fontSize: 11, color: '#555', marginTop: 10, textAlign: 'right' }}>{wordCount(e.content)} words</p>
                 </div>
               ))}
             </div>

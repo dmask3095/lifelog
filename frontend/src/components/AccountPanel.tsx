@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { updateProfile, changePassword, deleteAccount } from '../api';
+import { updateProfile, changePassword, deleteAccount, exportAll } from '../api';
 
 function extractErrorMessage(err: unknown, fallback: string): string {
   const maybeAxiosError = err as { response?: { data?: { error?: string } } };
@@ -118,6 +118,27 @@ export default function AccountPanel() {
       </div>
 
       <div className="card">
+        <div className="card-title">📦 Your data</div>
+        <p className="grocery-section-copy" style={{ marginBottom: 10 }}>Everything you have ever logged, as one JSON file. Free forever, no lock-in.</p>
+        <button
+          type="button"
+          className="btn-sm blue"
+          onClick={async () => {
+            const res = await exportAll();
+            const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `lifelog-export-${new Date().toISOString().slice(0, 10)}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+          }}
+        >
+          Export all my data
+        </button>
+      </div>
+
+      <div className="card">
         <div className="card-title">🚪 Session</div>
         <button type="button" className="btn-sm" onClick={() => logout()}>
           Log out
@@ -133,7 +154,7 @@ export default function AccountPanel() {
         ) : (
           <form onSubmit={confirmDelete} className="auth-form">
             <p className="grocery-section-copy">
-              This permanently deletes your account and all of your data (tasks, habits, logs, journal, groceries). Enter your password to confirm.
+              This permanently deletes your account and all of your data (tasks, habits, logs, journal). Enter your password to confirm.
             </p>
             <input
               className="input"

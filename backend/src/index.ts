@@ -14,6 +14,8 @@ import moodRoutes from './routes/moods';
 import habitRoutes from './routes/habits';
 import journalRoutes from './routes/journal';
 import groceryRoutes from './routes/groceries';
+import omniRoutes from './routes/omni';
+import exportRoutes from './routes/export';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
@@ -22,7 +24,7 @@ app.use(cors({
   origin: process.env.FRONTEND_ORIGIN || 'http://localhost:5173',
   credentials: true,
 }));
-app.use(express.json());
+app.use(express.json({ limit: '256kb' }));
 app.use(cookieParser());
 
 app.use('/api/auth', authRoutes);
@@ -35,10 +37,17 @@ app.use('/api/summary', summaryRoutes);
 app.use('/api/moods', moodRoutes);
 app.use('/api/habits', habitRoutes);
 app.use('/api/journal', journalRoutes);
-app.use('/api/groceries', groceryRoutes);
+app.use('/api/groceries', groceryRoutes); // retired from the UI in v2, kept for data access
+app.use('/api/omni-log', omniRoutes);
+app.use('/api/export', exportRoutes);
 
-app.get('/health', (req, res) => {
-  res.json({ status: 'LifeLog API is running', timestamp: new Date().toISOString() });
+app.get('/health', (_req, res) => {
+  res.json({ status: 'LifeLog API 2.0 is running', timestamp: new Date().toISOString() });
+});
+
+app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error(err);
+  res.status(500).json({ error: 'Something went wrong' });
 });
 
 dbReady

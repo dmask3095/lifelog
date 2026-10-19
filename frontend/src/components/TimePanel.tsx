@@ -1,86 +1,135 @@
-import { useEffect, useState } from 'react';
-import { api } from '../api';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { getTimeLogs, postTime, putDailyTime } from '../api';
+import { useRefresh } from '../context/RefreshContext';
+import { fmtMinutes } from '../lib/dates';
+import { TIME_CATEGORY_META, type TimeCategory } from '../types';
 
-interface Props { date: string; }
+interface Props { date: string; onChanged: () => void; }
 
-const categories = [
-  { key: 'wasted', label: '⏱ Time Wasted', color: '#ff4444' },
-  { key: 'rested', label: '😴 Time Rested', color: '#8844ff' },
-  { key: 'cooking', label: '🍳 Cooking Time', color: '#ff8800' },
-  { key: 'eating', label: '🍽 Eating Time', color: '#00aa44' },
-];
+const CATEGORIES = Object.keys(TIME_CATEGORY_META) as TimeCategory[];
+const PRESETS = [25, 50, 90];
 
-export default function TimePanel({ date }: Props) {
-  const [minutes, setMinutes] = useState<Record<string, number>>({
-    wasted: 0, rested: 0, cooking: 0, eating: 0,
-  });
-  const [notes, setNotes] = useState<Record<string, string>>({
-    wasted: '', rested: '', cooking: '', eating: '',
-  });
-  const [saved, setSaved] = useState('');
+export default function TimePanel({ date, onChanged }: Props) {
+  const { tick } = useRefresh();
+  const [minutes, setMinutes] = useState<Record<TimeCategory, number>>(() => Object.fromEntries(CATEGORIES.map((c) => [c, 0])) as Record<TimeCategory, number>);
   const [loading, setLoading] = useState(true);
+  const [saved, setSaved] = useState<string>('');
+  const timers = useRef<Partial<Record<TimeCategory, number>>>({});
 
-  useEffect(() => {
+  // focus timer
+  const [focusCat, setFocusCat] = useState<TimeCategory>('deep_work');
+  const [target, setTarget] = useState(25);
+  const [remaining, setRemaining] = useState(25 * 60);
+  const [running, setRunning] = useState(false);
+  const startedAt = useRef<number | null>(null);
+  const elapsedBefore = useRef(0);
+
+  const load = useCallback(() => {
     setLoading(true);
-    api.get(`/time-logs?date=${date}`)
-      .then(res => {
-        const nextMinutes = { wasted: 0, rested: 0, cooking: 0, eating: 0 };
-        const nextNotes = { wasted: '', rested: '', cooking: '', eating: '' };
-
-        for (const log of res.data as Array<{ category: keyof typeof nextMinutes; minutes: number; note?: string }>) {
-          nextMinutes[log.category] += Number(log.minutes) || 0;
-          if (log.note && !nextNotes[log.category]) nextNotes[log.category] = log.note;
-        }
-
-        setMinutes(nextMinutes);
-        setNotes(nextNotes);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
+    return getTimeLogs(date).then((r) => {
+      const next = Object.fromEntries(CATEGORIES.map((c) => [c, 0])) as Record<TimeCategory, number>;
+      for (const log of r.data) if (log.category in next) next[log.category] += Number(log.minutes) || 0;
+      setMinutes(next);
+    }).catch(() => {}).finally(() => setLoading(false));
   }, [date]);
 
-  const handleSave = async (category: string) => {
-    await api.put('/time-logs/daily', {
-      date,
-      category,
-      minutes: Math.max(0, Number(minutes[category]) || 0),
-      note: notes[category],
-    });
-    setSaved(category);
-    setTimeout(() => setSaved(''), 2000);
+  useEffect(() => { load(); }, [load, tick]);
+
+  const bump = (cat: TimeCategory, delta: number) => {
+    const next = Math.max(0, (minutes[cat] ?? 0) + delta);
+    setMinutes((m) => ({ ...m, [cat]: next }));
+    window.clearTimeout(timers.current[cat]);
+    timers.current[cat] = window.setTimeout(async () => {
+      await putDailyTime(date, cat, next);
+      setSaved(cat);
+      setTimeout(() => setSaved(''), 1200);
+      onChanged();
+    }, 500);
   };
+
+  useEffect(() => {
+    if (!running) return;
+    const id = window.setInterval(() => {
+      const elapsed = elapsedBefore.current + (Date.now() - (startedAt.current ?? Date.now())) / 1000;
+      const left = Math.max(0, target * 60 - elapsed);
+      setRemaining(left);
+      if (left <= 0) {
+        setRunning(false);
+        void finish(target);
+      }
+    }, 500);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running, target]);
+
+  const start = () => { startedAt.current = Date.now(); setRunning(true); };
+  const pause = () => {
+    if (startedAt.current) elapsedBefore.current += (Date.now() - startedAt.current) / 1000;
+    startedAt.current = null;
+    setRunning(false);
+  };
+  const reset = (mins = target) => { setRunning(false); startedAt.current = null; elapsedBefore.current = 0; setTarget(mins); setRemaining(mins * 60); };
+  const finish = async (mins: number) => {
+    const elapsedMin = Math.max(1, Math.round(mins));
+    await postTime(date, focusCat, elapsedMin, 'Focus timer');
+    reset(target);
+    await load();
+    onChanged();
+    setSaved(focusCat);
+    setTimeout(() => setSaved(''), 1500);
+  };
+  const stopAndLog = () => {
+    const elapsed = elapsedBefore.current + (startedAt.current ? (Date.now() - startedAt.current) / 1000 : 0);
+    const mins = Math.round(elapsed / 60);
+    setRunning(false);
+    startedAt.current = null;
+    elapsedBefore.current = 0;
+    if (mins >= 1) void finish(mins); else reset(target);
+  };
+
+  const mm = String(Math.floor(remaining / 60)).padStart(2, '0');
+  const ss = String(Math.floor(remaining % 60)).padStart(2, '0');
+  const total = CATEGORIES.reduce((a, c) => a + (minutes[c] ?? 0), 0);
 
   return (
     <div className="panel">
-      {loading && <p style={{ color: '#6f829a', fontSize: 13 }}>Loading your saved timing...</p>}
-      {categories.map(cat => (
-        <div key={cat.key} className="log-section" style={{ borderLeft: `3px solid ${cat.color}` }}>
-          <label>{cat.label}</label>
-          <div className="time-row">
-            <button onClick={() => setMinutes(m => ({ ...m, [cat.key]: Math.max(0, m[cat.key] - 15) }))} className="btn-sm">−</button>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
-              <input
-                type="number"
-                min={0}
-                value={minutes[cat.key]}
-                onChange={e => setMinutes(m => ({ ...m, [cat.key]: Math.max(0, Number(e.target.value) || 0) }))}
-                className="input time-input"
-              />
-              <span style={{ color: '#a6b8d1', fontSize: 13, fontWeight: 700 }}>min</span>
-            </div>
-            <button onClick={() => setMinutes(m => ({ ...m, [cat.key]: m[cat.key] + 15 }))} className="btn-sm green">+</button>
-          </div>
-          <input
-            value={notes[cat.key]}
-            onChange={e => setNotes(n => ({ ...n, [cat.key]: e.target.value }))}
-            placeholder="Note (optional)"
-            className="input"
-          />
-          <button onClick={() => handleSave(cat.key)} className="btn-sm blue">
-            {saved === cat.key ? '✓ Saved' : 'Log'}
-          </button>
+      <div className="log-section">
+        <label>🎯 Focus timer</label>
+        <div className="timer-face">{mm}:{ss}</div>
+        <div className="timer-row" style={{ marginBottom: 10 }}>
+          <select className="select-sm" value={focusCat} onChange={(e) => setFocusCat(e.target.value as TimeCategory)} disabled={running}>
+            {CATEGORIES.map((c) => <option key={c} value={c}>{TIME_CATEGORY_META[c].icon} {TIME_CATEGORY_META[c].label}</option>)}
+          </select>
+          {PRESETS.map((p) => (
+            <button key={p} className={`btn-xs ${target === p ? 'blue' : ''}`} disabled={running} onClick={() => reset(p)}>{p}m</button>
+          ))}
         </div>
-      ))}
+        <div className="timer-row">
+          {!running ? <button className="btn-sm green" onClick={start}>▶ Start</button> : <button className="btn-sm orange" onClick={pause}>❚❚ Pause</button>}
+          <button className="btn-sm blue" onClick={stopAndLog}>■ Stop & log</button>
+          <button className="btn-sm" onClick={() => reset(target)}>↺ Reset</button>
+        </div>
+        <p className="muted" style={{ marginTop: 10 }}>Finishing a block logs it automatically under the chosen category.</p>
+      </div>
+
+      <div className="log-section">
+        <label>⏱ Where the day went {loading ? <small style={{ color: '#6f829a' }}>· loading</small> : <small style={{ color: '#6f829a' }}>· {fmtMinutes(total)} logged</small>}</label>
+        <div className="time-grid" style={{ marginTop: 10 }}>
+          {CATEGORIES.map((c) => (
+            <div key={c} className="time-card" style={{ borderLeft: `3px solid ${TIME_CATEGORY_META[c].color}` }}>
+              <div className="time-card-head">
+                <span>{TIME_CATEGORY_META[c].icon} {TIME_CATEGORY_META[c].label}</span>
+                <b style={{ color: saved === c ? '#84f0c2' : undefined }}>{fmtMinutes(minutes[c] ?? 0)}</b>
+              </div>
+              <div className="time-card-btns">
+                <button onClick={() => bump(c, -15)}>−15</button>
+                <button onClick={() => bump(c, 15)}>+15</button>
+                <button onClick={() => bump(c, 60)}>+1h</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

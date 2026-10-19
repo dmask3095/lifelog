@@ -1,102 +1,68 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import AgendaView from './components/AgendaView';
 import HealthHub from './components/HealthHub';
 import Dashboard from './components/Dashboard';
 import HabitPanel from './components/HabitPanel';
 import JournalPanel from './components/JournalPanel';
-import GroceriesPanel from './components/GroceriesPanel';
 import AuthScreen from './components/AuthScreen';
 import AccountPanel from './components/AccountPanel';
+import OmniBar from './components/OmniBar';
+import DateStrip from './components/DateStrip';
 import ScoreRing from './components/ScoreRing';
 import { useAuth } from './context/AuthContext';
-import { api } from './api';
+import { RefreshProvider, useRefresh } from './context/RefreshContext';
+import { getSummary } from './api';
+import { shiftDate, todayLocal } from './lib/dates';
 import type { SummaryData } from './types';
 import './App.css';
+import './v2.css';
 
-type Tab = 'dashboard' | 'agenda' | 'habits' | 'health' | 'groceries' | 'journal' | 'account';
+export type Tab = 'dashboard' | 'agenda' | 'habits' | 'health' | 'journal' | 'account';
 
-const TAB_META: Record<Tab, { icon: string; label: string; eyebrow: string; description: string; tooltip: string }> = {
-  dashboard: {
-    icon: '📊',
-    label: 'Day',
-    eyebrow: 'Daily Pulse',
-    description: 'See your energy, momentum, and signals in one vivid snapshot.',
-    tooltip: 'Mission control for your day. Tiny charts, big main-character energy.',
-  },
-  agenda: {
-    icon: '✅',
-    label: 'Tasks',
-    eyebrow: 'Focus Queue',
-    description: 'Sort the day into clear priorities and keep the next move obvious.',
-    tooltip: 'Open the battle plan. Priorities first, chaos second.',
-  },
-  habits: {
-    icon: '🔥',
-    label: 'Habits',
-    eyebrow: 'Streak Studio',
-    description: 'Turn repeated wins into visible streaks that feel satisfying to maintain.',
-    tooltip: 'Visit the streak forge. Repeated tiny wins become legendary.',
-  },
-  health: {
-    icon: '💚',
-    label: 'Health',
-    eyebrow: 'Body Signals',
-    description: 'Track hydration, time, recovery, and mood in one calming control room.',
-    tooltip: 'Check the human maintenance panel. Hydrate the creature.',
-  },
-  groceries: {
-    icon: '🛒',
-    label: 'Groceries',
-    eyebrow: 'Kitchen Radar',
-    description: 'See what is stocked, what needs eating, and what dinner is trying to become.',
-    tooltip: 'Open the kitchen radar. Fridge diplomacy happens here.',
-  },
-  journal: {
-    icon: '📓',
-    label: 'Journal',
-    eyebrow: 'Reflection Space',
-    description: 'Capture the story behind the data while it is still fresh and honest.',
-    tooltip: 'Open the thought vault. Feelings and plot twists live here.',
-  },
-  account: {
-    icon: '⚙️',
-    label: 'Account',
-    eyebrow: 'Your Space',
-    description: 'Manage your profile, password, and account.',
-    tooltip: 'Manage your profile, password, and account.',
-  },
+const TAB_META: Record<Tab, { icon: string; label: string; eyebrow: string; description: string }> = {
+  dashboard: { icon: '📊', label: 'Day', eyebrow: 'Daily pulse', description: 'Capacity, scores and the one pattern that matters today.' },
+  agenda: { icon: '✅', label: 'Tasks', eyebrow: 'Focus queue', description: 'Priorities first. Stuck? Flag the hurdle and split it.' },
+  habits: { icon: '🔥', label: 'Habits', eyebrow: 'Elastic streaks', description: 'Bronze on hard days still counts. Shields cover the rest.' },
+  health: { icon: '💚', label: 'Health', eyebrow: 'Body signals', description: 'Fuel, time, sleep and mood feed your capacity score.' },
+  journal: { icon: '📓', label: 'Journal', eyebrow: 'Reflection', description: 'Prompts grounded in what actually happened today.' },
+  account: { icon: '⚙️', label: 'Account', eyebrow: 'Your space', description: 'Profile, password, export and account.' },
 };
 
-const TABS: { id: Tab; icon: string; label: string }[] = [
-  { id: 'dashboard', icon: '📊', label: 'Day' },
-  { id: 'agenda', icon: '✅', label: 'Tasks' },
-  { id: 'habits', icon: '🔥', label: 'Habits' },
-  { id: 'health', icon: '💚', label: 'Health' },
-  { id: 'groceries', icon: '🛒', label: 'Groceries' },
-  { id: 'journal', icon: '📓', label: 'Journal' },
-  { id: 'account', icon: '⚙️', label: 'Account' },
-];
+const TABS: Tab[] = ['dashboard', 'agenda', 'habits', 'health', 'journal', 'account'];
 
-export default function App() {
+function Shell() {
   const { user, loading, logout } = useAuth();
+  const { tick } = useRefresh();
+  const today = todayLocal();
+  const [date, setDate] = useState(today);
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [summary, setSummary] = useState<SummaryData | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(true);
-  // toISOString() converts to UTC first, which silently rolls "today" back a day
-  // for any timezone ahead of UTC during the early hours of the local day. Build
-  // the date string from local getters instead so it matches the user's own clock.
-  const now = new Date();
-  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   const activeMeta = TAB_META[activeTab];
 
-  useEffect(() => {
+  const reloadSummary = useCallback(() => {
     if (!user) return;
     setSummaryLoading(true);
-    api.get(`/summary/${today}`)
-      .then(res => setSummary(res.data))
+    getSummary(date)
+      .then((res) => setSummary(res.data))
       .catch(() => setSummary(null))
       .finally(() => setSummaryLoading(false));
-  }, [user, activeTab, today]);
+  }, [user, date]);
+
+  useEffect(() => { reloadSummary(); }, [reloadSummary, tick, activeTab]);
+
+  // [ and ] move through days; keeps hands on the keyboard on desktop.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+      if (e.key === '[') setDate((d) => shiftDate(d, -1));
+      if (e.key === ']') setDate((d) => shiftDate(d, 1));
+      if (e.key.toLowerCase() === 't' && !e.metaKey && !e.ctrlKey) setDate(today);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [today]);
 
   if (loading) {
     return <div className="app-loading">Loading LifeLog…</div>;
@@ -111,16 +77,20 @@ export default function App() {
         <header className="app-header auth-header">
           <div className="hero-copy">
             <div className="hero-badges">
-              <span className="hero-badge">LifeLog</span>
+              <span className="hero-badge">LifeLog 2.0</span>
             </div>
             <h1>Sign in</h1>
-            <p className="hero-description">Your own private space for tasks, habits, and reflections.</p>
+            <p className="hero-description">Plan by your real energy. Log your day in one line. See what actually drives your best days.</p>
           </div>
         </header>
         <AuthScreen />
       </div>
     );
   }
+
+  const capacity = summary?.capacity;
+  const capScore = capacity?.score ?? null;
+  const capColor = capacity?.level === 'recovery' ? '#ff9b6b' : capacity?.level === 'peak' ? '#7ce2b6' : '#59c3ff';
 
   return (
     <div className="app">
@@ -131,8 +101,7 @@ export default function App() {
       <header className="app-header">
         <div className="hero-copy">
           <div className="hero-badges">
-            <span className="hero-badge">LifeLog</span>
-            <span className="hero-badge subtle">{new Date().toDateString()}</span>
+            <span className="hero-badge">LifeLog 2.0</span>
             <span className="hero-badge subtle">
               {user.displayName || user.email}
               <button type="button" className="hero-logout" onClick={() => logout()} aria-label="Log out">⎋</button>
@@ -143,59 +112,62 @@ export default function App() {
           <p className="hero-description">{activeMeta.description}</p>
         </div>
 
-        <div className="hero-stat" title="Today's task progress">
-          {summaryLoading ? (
+        <button type="button" className="hero-stat hero-stat-btn" title="Today's capacity" onClick={() => setActiveTab('dashboard')}>
+          {summaryLoading && !summary ? (
             <span className="hero-stat-loading">…</span>
+          ) : capScore == null ? (
+            <>
+              <ScoreRing score={0} color="#3a4a60" size={70} />
+              <span className="hero-stat-caption">Log sleep or mood</span>
+            </>
           ) : (
             <>
-              <ScoreRing score={summary?.tasks.productivityScore ?? 0} color="#59c3ff" size={70} />
-              <span className="hero-stat-caption">
-                {summary ? `${summary.tasks.completed}/${summary.tasks.total} tasks` : 'No data yet'}
-              </span>
+              <ScoreRing score={capScore} color={capColor} size={70} />
+              <span className="hero-stat-caption">Capacity · {capacity?.level}</span>
             </>
           )}
-        </div>
+        </button>
       </header>
 
+      <div className="content omni-wrap">
+        <OmniBar date={date} />
+        <DateStrip date={date} today={today} onChange={setDate} />
+      </div>
+
       <div className="tab-strip">
-        {TABS.map(tab => (
-          <button
-            key={tab.id}
-            className={`tab-chip tooltip-trigger ${activeTab === tab.id ? 'active' : ''}`}
-            onClick={() => setActiveTab(tab.id)}
-            data-tooltip={TAB_META[tab.id].tooltip}
-            aria-label={`${tab.label}. ${TAB_META[tab.id].tooltip}`}
-          >
-            <span>{tab.icon}</span>
-            <span>{tab.label}</span>
+        {TABS.map((tab) => (
+          <button key={tab} className={`tab-chip ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>
+            <span>{TAB_META[tab].icon}</span>
+            <span>{TAB_META[tab].label}</span>
           </button>
         ))}
       </div>
 
-      <main className="content">
-        {activeTab === 'dashboard' && <Dashboard data={summary} loading={summaryLoading} />}
-        {activeTab === 'agenda' && <AgendaView date={today} />}
-        {activeTab === 'habits' && <HabitPanel date={today} />}
-        {activeTab === 'health' && <HealthHub date={today} />}
-        {activeTab === 'groceries' && <GroceriesPanel />}
-        {activeTab === 'journal' && <JournalPanel date={today} />}
+      <main className="content main-content">
+        {activeTab === 'dashboard' && <Dashboard date={date} today={today} data={summary} loading={summaryLoading} onNavigate={setActiveTab} />}
+        {activeTab === 'agenda' && <AgendaView date={date} today={today} summary={summary} onChanged={reloadSummary} />}
+        {activeTab === 'habits' && <HabitPanel date={date} onChanged={reloadSummary} />}
+        {activeTab === 'health' && <HealthHub date={date} onChanged={reloadSummary} />}
+        {activeTab === 'journal' && <JournalPanel date={date} summary={summary} />}
         {activeTab === 'account' && <AccountPanel />}
       </main>
 
       <nav className="bottom-nav">
-        {TABS.map(tab => (
-          <button
-            key={tab.id}
-            className={`nav-btn tooltip-trigger ${activeTab === tab.id ? 'active' : ''}`}
-            onClick={() => setActiveTab(tab.id)}
-            data-tooltip={TAB_META[tab.id].tooltip}
-            aria-label={`${tab.label}. ${TAB_META[tab.id].tooltip}`}
-          >
-            <span className="nav-icon">{tab.icon}</span>
-            <span className="nav-label">{tab.label}</span>
+        {TABS.map((tab) => (
+          <button key={tab} className={`nav-btn ${activeTab === tab ? 'active' : ''}`} onClick={() => setActiveTab(tab)} aria-label={TAB_META[tab].label}>
+            <span className="nav-icon">{TAB_META[tab].icon}</span>
+            <span className="nav-label">{TAB_META[tab].label}</span>
           </button>
         ))}
       </nav>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <RefreshProvider>
+      <Shell />
+    </RefreshProvider>
   );
 }

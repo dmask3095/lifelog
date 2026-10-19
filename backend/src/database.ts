@@ -58,6 +58,26 @@ export async function withTransaction<T>(fn: (tx: DbHandle) => Promise<T>): Prom
   }
 }
 
+// ---------------------------------------------------------------------------
+// v2 vocabularies (shared by routes, the Omni-Bar parser and the frontend)
+// ---------------------------------------------------------------------------
+export const TIME_CATEGORIES = [
+  'deep_work', 'admin', 'learning', 'exercise', 'social', 'rested', 'cooking', 'eating', 'wasted',
+] as const;
+export type TimeCategory = (typeof TIME_CATEGORIES)[number];
+
+export const TASK_POOLS = ['today', 'scheduled', 'someday', 'dropped'] as const;
+export type TaskPool = (typeof TASK_POOLS)[number];
+
+export const ENERGY_TAGS = ['deep', 'admin', 'quick', 'recovery'] as const;
+export type EnergyTag = (typeof ENERGY_TAGS)[number];
+
+export const HABIT_TIERS = ['bronze', 'silver', 'gold'] as const;
+export type HabitTier = (typeof HABIT_TIERS)[number];
+
+export const TASK_PRIORITIES = ['low', 'medium', 'high', 'urgent'] as const;
+export const TASK_STATUSES = ['pending', 'ongoing', 'completed', 'needs_attention'] as const;
+
 const TABLE_SCHEMAS: Record<string, string> = {
   tasks: `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,20 +88,26 @@ const TABLE_SCHEMAS: Record<string, string> = {
     priority TEXT DEFAULT 'medium' CHECK(priority IN ('low','medium','high','urgent')),
     date TEXT NOT NULL,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    completed_at TEXT
+    completed_at TEXT,
+    energy_tag TEXT DEFAULT 'quick',
+    pool TEXT NOT NULL DEFAULT 'today' CHECK(pool IN ('today','scheduled','someday','dropped')),
+    scheduled_for TEXT,
+    parent_task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE
   `,
   hurdles: `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
     description TEXT NOT NULL,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TEXT,
+    resolution TEXT
   `,
   time_logs: `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     date TEXT NOT NULL,
-    category TEXT NOT NULL CHECK(category IN ('wasted','rested','cooking','eating')),
+    category TEXT NOT NULL CHECK(category IN ('deep_work','admin','learning','exercise','social','rested','cooking','eating','wasted')),
     minutes INTEGER NOT NULL,
     note TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -93,7 +119,8 @@ const TABLE_SCHEMAS: Record<string, string> = {
     water_ml INTEGER DEFAULT 0,
     fruits TEXT,
     food_notes TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    tags TEXT
   `,
   body_logs: `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -119,7 +146,11 @@ const TABLE_SCHEMAS: Record<string, string> = {
     name TEXT NOT NULL,
     icon TEXT DEFAULT '✓',
     is_active INTEGER DEFAULT 1,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    floor_label TEXT,
+    target_label TEXT,
+    stretch_label TEXT,
+    grace_shields INTEGER DEFAULT 1
   `,
   habit_logs: `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -128,6 +159,7 @@ const TABLE_SCHEMAS: Record<string, string> = {
     date TEXT NOT NULL,
     completed INTEGER DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    tier TEXT DEFAULT 'silver',
     UNIQUE(habit_id, date)
   `,
   journal_entries: `
@@ -147,6 +179,7 @@ const TABLE_SCHEMAS: Record<string, string> = {
     last_logged_date TEXT,
     UNIQUE(user_id, metric)
   `,
+  // Retired from the UI in v2 (FreshFlow Pantry owns the kitchen); kept so existing data stays readable.
   groceries: `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -160,6 +193,30 @@ const TABLE_SCHEMAS: Record<string, string> = {
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
   `,
+};
+
+// Additive v2 columns. These run against BOTH the local SQLite file and Turso: they are
+// plain `ALTER TABLE ... ADD COLUMN` statements guarded by a sqlite_master read, so no
+// PRAGMA is needed over the remote protocol.
+const V2_COLUMNS: Record<string, Array<{ name: string; ddl: string }>> = {
+  tasks: [
+    { name: 'energy_tag', ddl: "energy_tag TEXT DEFAULT 'quick'" },
+    { name: 'pool', ddl: "pool TEXT NOT NULL DEFAULT 'today'" },
+    { name: 'scheduled_for', ddl: 'scheduled_for TEXT' },
+    { name: 'parent_task_id', ddl: 'parent_task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE' },
+  ],
+  hurdles: [
+    { name: 'resolved_at', ddl: 'resolved_at TEXT' },
+    { name: 'resolution', ddl: 'resolution TEXT' },
+  ],
+  health_logs: [{ name: 'tags', ddl: 'tags TEXT' }],
+  habits: [
+    { name: 'floor_label', ddl: 'floor_label TEXT' },
+    { name: 'target_label', ddl: 'target_label TEXT' },
+    { name: 'stretch_label', ddl: 'stretch_label TEXT' },
+    { name: 'grace_shields', ddl: 'grace_shields INTEGER DEFAULT 1' },
+  ],
+  habit_logs: [{ name: 'tier', ddl: "tier TEXT DEFAULT 'silver'" }],
 };
 
 // Parents must be rebuilt before children: renaming a table mid-rebuild rewrites any
@@ -181,6 +238,17 @@ async function userIdCascadeAction(table: string): Promise<string | null> {
   return fks.find((fk) => fk.from === 'user_id')?.on_delete ?? null;
 }
 
+async function tableSql(table: string): Promise<string> {
+  const row = await db.get<{ sql: string }>(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", table
+  );
+  return row?.sql ?? '';
+}
+
+function sqlHasColumn(sql: string, column: string): boolean {
+  return new RegExp(`[\\s(,]${column}\\s`, 'i').test(sql);
+}
+
 // Full rebuild (rename -> create canonical schema -> copy -> drop) used both to add a
 // missing user_id column when ALTER TABLE can't express the needed constraint change,
 // and to repair a user_id foreign key that's missing ON DELETE CASCADE. Dev-only (see
@@ -196,6 +264,43 @@ async function rebuildWithCanonicalSchema(table: string) {
       SELECT ${hadUserId ? 'user_id, ' : ''}${sharedColumns} FROM ${table}_old
   `);
   await db.run(`DROP TABLE ${table}_old`);
+}
+
+// v2: widen the time_logs category vocabulary. The original CHECK only allowed
+// ('wasted','rested','cooking','eating'), which made Deep Work, Admin, Exercise, Learning
+// and Social impossible to log. Uses plain SQL only, so it also runs on Turso.
+async function widenTimeLogCategories() {
+  const sql = await tableSql('time_logs');
+  if (!sql || sql.includes('deep_work')) return;
+  await db.run('ALTER TABLE time_logs RENAME TO time_logs_v1');
+  await db.run(`CREATE TABLE time_logs (${TABLE_SCHEMAS.time_logs})`);
+  await db.run(`
+    INSERT INTO time_logs (id, user_id, date, category, minutes, note, created_at)
+      SELECT id, user_id, date, category, minutes, note, created_at FROM time_logs_v1
+  `);
+  await db.run('DROP TABLE time_logs_v1');
+}
+
+async function applyV2Migrations() {
+  for (const [table, columns] of Object.entries(V2_COLUMNS)) {
+    const sql = await tableSql(table);
+    if (!sql) continue;
+    for (const column of columns) {
+      if (!sqlHasColumn(sql, column.name)) {
+        await db.run(`ALTER TABLE ${table} ADD COLUMN ${column.ddl}`);
+      }
+    }
+  }
+  await widenTimeLogCategories();
+  for (const table of ALL_TABLES) {
+    await db.run(`CREATE INDEX IF NOT EXISTS idx_${table}_user_id ON ${table}(user_id)`);
+  }
+  await db.run('CREATE INDEX IF NOT EXISTS idx_tasks_user_date ON tasks(user_id, date)');
+  await db.run('CREATE INDEX IF NOT EXISTS idx_habit_logs_user_date ON habit_logs(user_id, date)');
+  await db.run('CREATE INDEX IF NOT EXISTS idx_body_logs_user_date ON body_logs(user_id, date)');
+  await db.run('CREATE INDEX IF NOT EXISTS idx_health_logs_user_date ON health_logs(user_id, date)');
+  await db.run('CREATE INDEX IF NOT EXISTS idx_moods_user_date ON moods(user_id, date)');
+  await db.run('CREATE INDEX IF NOT EXISTS idx_time_logs_user_date ON time_logs(user_id, date)');
 }
 
 async function setupDatabase() {
@@ -218,39 +323,36 @@ async function setupDatabase() {
   // importing that same file once it's already fully migrated, so this never needs to
   // run there — and some PRAGMAs used here are not reliably supported over Turso's
   // remote protocol, so skipping it in production avoids a startup crash risk.
-  if (!isLocalFile) return;
-
-  // Rebuilding a referenced table (tasks/habits) rewrites any other table's FK clause
-  // that names it, which can otherwise cascade-delete children when the old copy is
-  // dropped. Disabling enforcement for the duration of the rebuild avoids that.
-  await db.run('PRAGMA foreign_keys = OFF');
-  try {
-    for (const table of ALL_TABLES) {
-      if (!(await hasColumn(table, 'user_id'))) {
-        // journal_entries/streaks also need their UNIQUE constraint to become
-        // composite (user_id, date|metric), which ALTER TABLE ADD COLUMN can't express.
-        if (table === 'journal_entries' || table === 'streaks') {
+  if (isLocalFile) {
+    // Rebuilding a referenced table (tasks/habits) rewrites any other table's FK clause
+    // that names it, which can otherwise cascade-delete children when the old copy is
+    // dropped. Disabling enforcement for the duration of the rebuild avoids that.
+    await db.run('PRAGMA foreign_keys = OFF');
+    try {
+      for (const table of ALL_TABLES) {
+        if (!(await hasColumn(table, 'user_id'))) {
+          if (table === 'journal_entries' || table === 'streaks') {
+            await rebuildWithCanonicalSchema(table);
+          } else {
+            await db.run(`ALTER TABLE ${table} ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE`);
+          }
+        } else if ((await userIdCascadeAction(table)) !== 'CASCADE') {
           await rebuildWithCanonicalSchema(table);
-        } else {
-          await db.run(`ALTER TABLE ${table} ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE CASCADE`);
         }
-      } else if ((await userIdCascadeAction(table)) !== 'CASCADE') {
-        // Repairs databases migrated by an earlier version of this script that added
-        // user_id without ON DELETE CASCADE, which broke account deletion.
-        await rebuildWithCanonicalSchema(table);
       }
+    } finally {
+      await db.run('PRAGMA foreign_keys = ON');
     }
-
-    for (const table of ALL_TABLES) {
-      await db.run(`CREATE INDEX IF NOT EXISTS idx_${table}_user_id ON ${table}(user_id)`);
-    }
-  } finally {
-    await db.run('PRAGMA foreign_keys = ON');
   }
 
-  const fkIssues = await db.all('PRAGMA foreign_key_check');
-  if (fkIssues.length > 0) {
-    console.warn('Foreign key check found issues after migration:', fkIssues);
+  // v2 additive migrations run everywhere (plain SQL, no PRAGMA).
+  await applyV2Migrations();
+
+  if (isLocalFile) {
+    const fkIssues = await db.all('PRAGMA foreign_key_check');
+    if (fkIssues.length > 0) {
+      console.warn('Foreign key check found issues after migration:', fkIssues);
+    }
   }
 }
 

@@ -1,352 +1,348 @@
-import { useState, useEffect } from 'react';
-import { getTasks, createTask, updateTask, deleteTask } from '../api';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { createHurdle, createTask, deleteTask, getSomedayTasks, getTaskHurdles, getTasks, resolveHurdle, splitTask, updateTask } from '../api';
+import { useRefresh } from '../context/RefreshContext';
+import { daysBetween, formatShort } from '../lib/dates';
+import { getMvd, MVD_EVENT } from '../lib/mvd';
+import { ENERGY_META, PRIORITY_META, type EnergyTag, type Hurdle, type Priority, type SummaryData, type Task } from '../types';
 
-interface Task {
-  id: number;
-  title: string;
-  status: 'pending' | 'ongoing' | 'completed' | 'needs_attention';
-  priority: 'low' | 'medium' | 'high' | 'urgent';
+interface Props {
   date: string;
+  today: string;
+  summary: SummaryData | null;
+  onChanged: () => void;
 }
 
-interface Props { date: string; }
-
-const PRIORITY_CONFIG = {
-  urgent: { color: '#ff4444', bg: '#1a0000', label: '🔴 Urgent' },
-  high:   { color: '#ff8800', bg: '#1a0d00', label: '🟠 High' },
-  medium: { color: '#4488ff', bg: '#001833', label: '🔵 Medium' },
-  low:    { color: '#666666', bg: '#141414', label: '⚫ Low' },
+const PRIORITY_ORDER: Priority[] = ['urgent', 'high', 'medium', 'low'];
+const STATUS_LABELS: Record<Task['status'], string> = {
+  pending: 'Pending', ongoing: 'In progress', completed: 'Done', needs_attention: 'Blocked',
 };
+const HURDLE_CHIPS = ['Waiting on someone', 'Too vague', 'Too big', 'Don’t know the first step', 'Low energy', 'Missing info'];
+const TRIAGE_AFTER_DAYS = 2;
 
-const PRIORITY_ORDER = ['urgent', 'high', 'medium', 'low'] as const;
-const STATUS_ORDER = ['needs_attention', 'ongoing', 'pending', 'completed'] as const;
-
-const STATUS_ACTIONS = {
-  pending:         ['complete', 'start', 'flag'],
-  ongoing:         ['complete', 'flag'],
-  needs_attention: ['complete', 'start'],
-  completed:       ['flag'],
-};
-
-const ACTION_BTN: Record<string, { label: string; cls: string; nextStatus: string; tooltip: string }> = {
-  complete: { label: '✓', cls: 'green', nextStatus: 'completed', tooltip: 'Mark it done. Queue the tiny victory confetti.' },
-  start:    { label: '▶', cls: 'blue',  nextStatus: 'ongoing', tooltip: 'Start this quest. Momentum likes a dramatic entrance.' },
-  flag:     { label: '⚠', cls: 'orange', nextStatus: 'needs_attention', tooltip: 'Wave a tiny caution flag. This one needs backup.' },
-};
-
-const STATUS_LABELS: Record<string, string> = {
-  pending: '⏳ Pending',
-  ongoing: '🔄 Ongoing',
-  completed: '✅ Completed',
-  needs_attention: '⚠️ Needs Attention',
-};
-
-function daysOverdue(taskDate: string, today: string): number {
-  const a = new Date(taskDate + 'T00:00:00').getTime();
-  const b = new Date(today + 'T00:00:00').getTime();
-  return Math.round((b - a) / 86400000);
+function microStepTemplates(title: string): string[] {
+  return [
+    `Open everything needed for “${title}” (10 min)`,
+    `Write the ugly first version of “${title}” (10 min)`,
+    `Define what “done” looks like for “${title}” and finish one piece`,
+  ];
 }
 
-type GroupMode = 'priority' | 'status';
+function TaskRow({ task, children, date, today, hurdleCount, isSub, openDrawer, onAction, onEdit, onDelete }: {
+  task: Task; children?: React.ReactNode; date: string; today: string; hurdleCount: number; isSub: boolean;
+  openDrawer: boolean; onAction: (status: Task['status']) => void; onEdit: () => void; onDelete: () => void;
+}) {
+  const overdueDays = task.status !== 'completed' && task.date < date ? daysBetween(task.date, date) : 0;
+  const pm = PRIORITY_META[task.priority];
+  return (
+    <div className={`task-v2 ${task.status === 'completed' ? 'done' : ''}`} style={{ borderLeft: `4px solid ${pm.color}` }}>
+      <div className={`task-main ${isSub ? 'sub' : ''}`}>
+        <div className="task-text">
+          <div className="task-name">{task.title}</div>
+          <div className="task-meta">
+            <span>{STATUS_LABELS[task.status]}</span>
+            <span>· {ENERGY_META[task.energy_tag]?.icon ?? '⚡'} {ENERGY_META[task.energy_tag]?.label ?? 'Quick'}</span>
+            {overdueDays > 0 && <span className="overdue">· ⏰ {overdueDays}d carried</span>}
+            {hurdleCount > 0 && <span className="hurdle-count">· ⚠ {hurdleCount} hurdle{hurdleCount > 1 ? 's' : ''}</span>}
+            {task.scheduled_for && task.scheduled_for > today && <span>· 📅 {formatShort(task.scheduled_for)}</span>}
+          </div>
+        </div>
+        <div className="task-btns">
+          {task.status !== 'completed' && <button className="green" title="Done" onClick={() => onAction('completed')}>✓</button>}
+          {task.status === 'pending' && <button className="blue" title="Start" onClick={() => onAction('ongoing')}>▶</button>}
+          {task.status === 'completed' && <button title="Reopen" onClick={() => onAction('pending')}>↺</button>}
+          {task.status !== 'completed' && <button className={`orange ${openDrawer ? 'active' : ''}`} title="Flag a hurdle" onClick={onEdit}>⚠</button>}
+          <button className="red" title="Delete" onClick={onDelete}>✕</button>
+        </div>
+      </div>
+      {children}
+    </div>
+  );
+}
 
-export default function AgendaView({ date }: Props) {
+export default function AgendaView({ date, today, summary, onChanged }: Props) {
+  const { tick } = useRefresh();
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [someday, setSomeday] = useState<Task[]>([]);
   const [title, setTitle] = useState('');
-  const [priority, setPriority] = useState<Task['priority']>('medium');
-  const [groupMode, setGroupMode] = useState<GroupMode>('priority');
-  const [loading, setLoading] = useState(false);
-  const [editingTaskId, setEditingTaskId] = useState<number | null>(null);
-  const [editTitle, setEditTitle] = useState('');
-  const [editPriority, setEditPriority] = useState<Task['priority']>('medium');
-  const [savingEdit, setSavingEdit] = useState(false);
+  const [priority, setPriority] = useState<Priority>('medium');
+  const [energy, setEnergy] = useState<EnergyTag>('quick');
+  const [adding, setAdding] = useState(false);
+  const [groupMode, setGroupMode] = useState<'priority' | 'status'>('priority');
+  const [drawerTask, setDrawerTask] = useState<number | null>(null);
+  const [drawerHurdles, setDrawerHurdles] = useState<Hurdle[]>([]);
+  const [hurdleText, setHurdleText] = useState('');
+  const [steps, setSteps] = useState<string[] | null>(null);
+  const [showSomeday, setShowSomeday] = useState(false);
+  const [scheduleFor, setScheduleFor] = useState<Record<number, string>>({});
+  const [showAllMvd, setShowAllMvd] = useState(false);
+  const recommended = summary?.capacity.mvdRecommended ?? false;
+  const [mvd, setMvdState] = useState(() => getMvd(date, recommended));
 
-  const sortTasks = (items: Task[]) => [...items].sort((a, b) => {
-    const priorityDiff = PRIORITY_ORDER.indexOf(a.priority) - PRIORITY_ORDER.indexOf(b.priority);
-    if (priorityDiff !== 0) return priorityDiff;
+  useEffect(() => { setMvdState(getMvd(date, recommended)); }, [date, recommended]);
+  useEffect(() => {
+    const onEvt = () => setMvdState(getMvd(date, recommended));
+    window.addEventListener(MVD_EVENT, onEvt);
+    return () => window.removeEventListener(MVD_EVENT, onEvt);
+  }, [date, recommended]);
 
-    const statusDiff = STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status);
-    if (statusDiff !== 0) return statusDiff;
+  const load = useCallback(async () => {
+    const [t, s] = await Promise.all([getTasks(date), getSomedayTasks()]);
+    setTasks(t.data);
+    setSomeday(s.data);
+  }, [date]);
 
-    return a.id - b.id;
-  });
+  useEffect(() => { load().catch(() => setTasks([])); }, [load, tick]);
 
-  const fetchTasks = async () => {
-    const res = await getTasks(date);
-    setTasks(sortTasks(res.data));
-  };
+  useEffect(() => {
+    if (drawerTask == null) { setDrawerHurdles([]); return; }
+    getTaskHurdles(drawerTask).then((r) => setDrawerHurdles(r.data)).catch(() => setDrawerHurdles([]));
+  }, [drawerTask, tick]);
 
-  useEffect(() => { fetchTasks(); }, [date]);
+  const refresh = async () => { await load(); onChanged(); };
 
   const handleAdd = async () => {
     if (!title.trim()) return;
-    setLoading(true);
-    await createTask({ title, priority, date });
-    setTitle('');
-    await fetchTasks();
-    setLoading(false);
-  };
-
-  const handleAction = async (id: number, nextStatus: string) => {
-    await updateTask(id, { status: nextStatus });
-    await fetchTasks();
-  };
-
-  const handleDelete = async (id: number) => {
-    await deleteTask(id);
-    await fetchTasks();
-  };
-
-  const startEditing = (task: Task) => {
-    setEditingTaskId(task.id);
-    setEditTitle(task.title);
-    setEditPriority(task.priority);
-  };
-
-  const cancelEditing = () => {
-    setEditingTaskId(null);
-    setEditTitle('');
-    setEditPriority('medium');
-    setSavingEdit(false);
-  };
-
-  const handleSaveEdit = async () => {
-    if (editingTaskId === null || !editTitle.trim()) return;
-
-    setSavingEdit(true);
+    setAdding(true);
     try {
-      await updateTask(editingTaskId, {
-        title: editTitle.trim(),
-        priority: editPriority,
-      });
-      await fetchTasks();
-      cancelEditing();
-    } finally {
-      setSavingEdit(false);
+      await createTask({ title: title.trim(), priority, date, energy_tag: energy });
+      setTitle('');
+      await refresh();
+    } finally { setAdding(false); }
+  };
+
+  const act = async (id: number, status: Task['status']) => {
+    await updateTask(id, status === 'completed' ? { status, date } : { status });
+    await refresh();
+  };
+  const remove = async (id: number) => { await deleteTask(id); await refresh(); };
+  const triage = async (id: number, action: 'today' | 'schedule' | 'someday' | 'drop') => {
+    if (action === 'today') await updateTask(id, { pool: 'today', date });
+    if (action === 'schedule') {
+      const when = scheduleFor[id];
+      if (!when) return;
+      await updateTask(id, { pool: 'scheduled', scheduled_for: when, date: when });
     }
+    if (action === 'someday') await updateTask(id, { pool: 'someday' });
+    if (action === 'drop') await updateTask(id, { pool: 'dropped' });
+    await refresh();
   };
 
-  const renderTask = (task: Task) => {
-    const isEditing = editingTaskId === task.id;
+  const saveHurdle = async (taskId: number, text: string) => {
+    if (!text.trim()) return;
+    await createHurdle(taskId, text.trim());
+    setHurdleText('');
+    const r = await getTaskHurdles(taskId);
+    setDrawerHurdles(r.data);
+    await refresh();
+  };
+  const resolve = async (h: Hurdle) => {
+    await resolveHurdle(h.id, 'Resolved from Tasks');
+    const r = await getTaskHurdles(h.task_id);
+    setDrawerHurdles(r.data);
+    await refresh();
+  };
+  const doSplit = async (taskId: number) => {
+    if (!steps) return;
+    const clean = steps.map((s) => s.trim()).filter(Boolean);
+    if (clean.length === 0) return;
+    await splitTask(taskId, clean, date);
+    setSteps(null);
+    setDrawerTask(null);
+    await refresh();
+  };
 
+  const hurdleCounts = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const h of summary?.hurdles ?? []) m.set(h.task_id, (m.get(h.task_id) ?? 0) + 1);
+    return m;
+  }, [summary]);
+
+  const byParent = useMemo(() => {
+    const m = new Map<number, Task[]>();
+    for (const t of tasks) if (t.parent_task_id != null) m.set(t.parent_task_id, [...(m.get(t.parent_task_id) ?? []), t]);
+    return m;
+  }, [tasks]);
+  const topLevel = tasks.filter((t) => t.parent_task_id == null || !tasks.some((p) => p.id === t.parent_task_id));
+
+  const triageList = topLevel.filter((t) => t.status !== 'completed' && t.pool === 'today' && daysBetween(t.date, date) > TRIAGE_AFTER_DAYS);
+  const triageIds = new Set(triageList.map((t) => t.id));
+
+  let visible = topLevel.filter((t) => !triageIds.has(t.id));
+  const mvdHidden = mvd && !showAllMvd
+    ? visible.filter((t) => t.status !== 'completed').slice(2)
+    : [];
+  if (mvd && !showAllMvd) {
+    const open = visible.filter((t) => t.status !== 'completed');
+    const keep = new Set(open.slice(0, 2).map((t) => t.id));
+    visible = visible.filter((t) => t.status === 'completed' || keep.has(t.id));
+  }
+
+  const renderTask = (task: Task, isSub = false) => {
+    const subs = byParent.get(task.id) ?? [];
+    const open = drawerTask === task.id;
     return (
-      <div key={task.id} style={{
-        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        padding: '14px 16px', background: '#1a1a1a', borderRadius: 12,
-        border: `1px solid #242424`,
-        borderLeft: `4px solid ${PRIORITY_CONFIG[task.priority].color}`,
-        marginBottom: 8, minHeight: 56, gap: 12,
-      }}>
-        <div style={{ flex: 1 }}>
-          {isEditing ? (
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <input
-                value={editTitle}
-                onChange={e => setEditTitle(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') handleSaveEdit();
-                  if (e.key === 'Escape') cancelEditing();
-                }}
-                className="input"
-                style={{ flex: 1, minWidth: 180 }}
-                placeholder="Task title..."
-              />
-              <select
-                value={editPriority}
-                onChange={e => setEditPriority(e.target.value as Task['priority'])}
-                className="select"
-                style={{ minWidth: 130 }}
-              >
-                <option value="urgent">🔴 Urgent</option>
-                <option value="high">🟠 High</option>
-                <option value="medium">🔵 Medium</option>
-                <option value="low">⚫ Low</option>
-              </select>
-            </div>
-          ) : (
-            <>
-              <div style={{ fontSize: 15, color: task.status === 'completed' ? '#444' : '#e8e8e8',
-                textDecoration: task.status === 'completed' ? 'line-through' : 'none' }}>
-                {task.title}
-              </div>
-              {(groupMode === 'priority' || task.date !== date) && (
-                <div style={{ fontSize: 11, color: task.date !== date ? '#ff8800' : '#555', marginTop: 3 }}>
-                  {groupMode === 'priority' && STATUS_LABELS[task.status]}
-                  {task.date !== date && (
-                    <span style={{ marginLeft: groupMode === 'priority' ? 8 : 0 }}>
-                      ⏰ {daysOverdue(task.date, date)}d overdue
-                    </span>
-                  )}
-                </div>
-              )}
-            </>
-          )}
-        </div>
-        <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-          {isEditing ? (
-            <>
-              <button
-                className="btn-sm green"
-                onClick={handleSaveEdit}
-                disabled={savingEdit || !editTitle.trim()}
-              >
-                {savingEdit ? '...' : 'Save'}
-              </button>
-              <button className="btn-sm" onClick={cancelEditing}>Cancel</button>
-            </>
-          ) : (
-            <>
-              {(STATUS_ACTIONS[task.status] || []).map(action => (
-                <button key={action}
-                  className={`btn-sm tooltip-trigger ${ACTION_BTN[action].cls}`}
-                  onClick={() => handleAction(task.id, ACTION_BTN[action].nextStatus)}
-                  data-tooltip={ACTION_BTN[action].tooltip}
-                  aria-label={ACTION_BTN[action].tooltip}>
-                  {ACTION_BTN[action].label}
-                </button>
+      <TaskRow
+        key={task.id}
+        task={task}
+        date={date}
+        today={today}
+        hurdleCount={hurdleCounts.get(task.id) ?? 0}
+        isSub={isSub}
+        openDrawer={open}
+        onAction={(s) => act(task.id, s)}
+        onEdit={() => { setDrawerTask(open ? null : task.id); setSteps(null); setHurdleText(''); }}
+        onDelete={() => remove(task.id)}
+      >
+        {open && (
+          <div className="drawer">
+            <div className="drawer-title">What’s in the way?</div>
+            <div className="chip-row">
+              {HURDLE_CHIPS.map((c) => (
+                <button key={c} type="button" className="chip clickable tone-hurdle" onClick={() => saveHurdle(task.id, c)}>{c}</button>
               ))}
-              <button
-                className="btn-sm blue tooltip-trigger"
-                onClick={() => startEditing(task)}
-                data-tooltip="Rewrite the mission. Same task, fresher words."
-                aria-label="Edit this task"
-              >
-                ✎
-              </button>
-              <button
-                className="btn-sm red tooltip-trigger"
-                onClick={() => handleDelete(task.id)}
-                data-tooltip="Poof. Send this task back to the void."
-                aria-label="Delete this task"
-              >
-                ✕
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-    );
-  };
-
-  const renderByPriority = () => (
-    <div style={{ display: 'grid', gap: 12 }}>
-      {(['urgent', 'high', 'medium', 'low'] as const).map(p => {
-        const group = tasks.filter(t => t.priority === p);
-        const cfg = PRIORITY_CONFIG[p];
-        return (
-          <div key={p} style={{
-            padding: 12,
-            borderRadius: 16,
-            background: '#121212',
-            border: `1px solid ${cfg.color}33`,
-            boxShadow: `inset 0 0 0 1px ${cfg.color}12`,
-          }}>
-            <div style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              padding: '10px 14px', background: cfg.bg,
-              borderRadius: 10, marginBottom: group.length > 0 ? 10 : 0,
-              border: `1px solid ${cfg.color}33`,
-            }}>
-              <span style={{ fontSize: 13, fontWeight: 700, color: cfg.color }}>{cfg.label}</span>
-              <span style={{ fontSize: 12, color: cfg.color, background: `${cfg.color}22`, padding: '2px 8px', borderRadius: 10 }}>
-                {group.filter(t => t.status === 'completed').length}/{group.length}
-              </span>
             </div>
-            {group.length > 0 ? (
-              group.map(renderTask)
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input className="input" placeholder="Describe the blocker…" value={hurdleText} onChange={(e) => setHurdleText(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && saveHurdle(task.id, hurdleText)} />
+              <button className="btn-sm orange" onClick={() => saveHurdle(task.id, hurdleText)} disabled={!hurdleText.trim()}>Log</button>
+            </div>
+            {drawerHurdles.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {drawerHurdles.map((h) => (
+                  <div key={h.id} className={`hurdle-row ${h.resolved_at ? 'resolved' : ''}`}>
+                    <span>{h.description}</span>
+                    {!h.resolved_at && <button className="btn-xs green" onClick={() => resolve(h)}>Resolved</button>}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="drawer-title" style={{ color: '#7dd5ff', marginTop: 4 }}>Unblock it</div>
+            {steps == null ? (
+              <div className="chip-row">
+                <button className="btn-xs blue" onClick={() => setSteps(microStepTemplates(task.title))}>Split into 3 micro-steps</button>
+                <button className="btn-xs" onClick={() => act(task.id, 'ongoing')}>Just start (2 min)</button>
+                <button className="btn-xs" onClick={() => triage(task.id, 'someday')}>Park in Someday</button>
+              </div>
             ) : (
-              <div style={{
-                minHeight: 64,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                borderRadius: 12,
-                border: '1px dashed #2a2a2a',
-                color: '#555',
-                fontSize: 13,
-              }}>
-                No {p} tasks yet.
+              <div className="steps-grid">
+                {steps.map((s, i) => (
+                  <input key={i} className="input" value={s} onChange={(e) => setSteps(steps.map((x, j) => (j === i ? e.target.value : x)))} />
+                ))}
+                <div className="chip-row">
+                  <button className="btn-sm blue" onClick={() => doSplit(task.id)}>Create steps</button>
+                  <button className="btn-sm" onClick={() => setSteps(null)}>Cancel</button>
+                </div>
               </div>
             )}
           </div>
-        );
-      })}
-    </div>
-  );
+        )}
+        {subs.map((s) => renderTask(s, true))}
+      </TaskRow>
+    );
+  };
 
-  const renderByStatus = () => (
-    <>
-      {(['needs_attention', 'ongoing', 'pending', 'completed'] as const).map(s => {
-        const group = tasks.filter(t => t.status === s);
-        if (group.length === 0) return null;
-        return (
-          <div key={s}>
-            <div style={{ fontSize: 11, color: '#555', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 8, paddingLeft: 2 }}>
-              {STATUS_LABELS[s]}
-            </div>
-            {group.map(renderTask)}
-          </div>
-        );
-      })}
-    </>
-  );
+  const groupedByPriority = PRIORITY_ORDER.map((p) => ({ p, items: visible.filter((t) => t.priority === p) }));
+  const groupedByStatus = (['needs_attention', 'ongoing', 'pending', 'completed'] as Task['status'][]).map((s) => ({ s, items: visible.filter((t) => t.status === s) }));
 
   return (
     <div className="panel">
-
-      {/* Add task form */}
       <div style={{ display: 'flex', gap: 8 }}>
-        <input value={title} onChange={e => setTitle(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && handleAdd()}
-          placeholder="Add a task..." className="input" style={{ flex: 1, minWidth: 0 }} />
-        <select value={priority} onChange={e => setPriority(e.target.value as Task['priority'])}
-          className="select" style={{ flexShrink: 0, width: 150 }}>
+        <input value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleAdd()} placeholder="Add a task…" className="input" style={{ flex: 1, minWidth: 0 }} />
+        <select value={priority} onChange={(e) => setPriority(e.target.value as Priority)} className="select" style={{ flexShrink: 0, width: 120 }}>
           <option value="urgent">🔴 Urgent</option>
           <option value="high">🟠 High</option>
           <option value="medium">🔵 Medium</option>
           <option value="low">⚫ Low</option>
         </select>
       </div>
-      <button onClick={handleAdd} disabled={loading || !title.trim()} className="btn-primary">
-        {loading ? 'Adding...' : '+ Add Task'}
-      </button>
+      <div className="energy-chips">
+        {(Object.keys(ENERGY_META) as EnergyTag[]).map((e) => (
+          <button key={e} type="button" className={`energy-chip ${energy === e ? 'active' : ''}`} onClick={() => setEnergy(e)}>{ENERGY_META[e].icon} {ENERGY_META[e].label}</button>
+        ))}
+        <button onClick={handleAdd} disabled={adding || !title.trim()} className="btn-xs blue" style={{ marginLeft: 'auto' }}>{adding ? 'Adding…' : '+ Add'}</button>
+      </div>
 
-      {/* Summary bar */}
-      {tasks.length > 0 && (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {(['urgent','high','medium','low'] as const).map(p => {
-            const count = tasks.filter(t => t.priority === p && t.status !== 'completed').length;
-            if (count === 0) return null;
-            return (
-              <div key={p} style={{ padding: '4px 10px', borderRadius: 20, background: `${PRIORITY_CONFIG[p].color}22`, border: `1px solid ${PRIORITY_CONFIG[p].color}44`, fontSize: 12, color: PRIORITY_CONFIG[p].color }}>
-                {count} {p}
-              </div>
-            );
-          })}
+      {mvd && (
+        <div className="mvd-banner">
+          <span>🌿 Minimum Viable Day: showing your top {Math.min(2, visible.filter((t) => t.status !== 'completed').length)} open tasks{mvdHidden.length > 0 ? ` · ${mvdHidden.length} parked for later` : ''}.</span>
+          <button className="btn-xs" onClick={() => setShowAllMvd((v) => !v)}>{showAllMvd ? 'Top 2 only' : 'Show all'}</button>
         </div>
       )}
 
-      {/* Group mode toggle */}
-      {tasks.length > 0 && (
+      {triageList.length > 0 && (
+        <div className="card triage">
+          <div className="card-title">⏳ 15-second triage · {triageList.length} task{triageList.length > 1 ? 's' : ''} older than {TRIAGE_AFTER_DAYS} days</div>
+          <div style={{ position: 'relative' }}>
+            {triageList.map((t) => (
+              <div key={t.id} className="triage-item">
+                <div className="triage-title">{t.title}<small>{daysBetween(t.date, date)}d carried</small></div>
+                <div className="triage-actions">
+                  <button className="btn-xs green" onClick={() => triage(t.id, 'today')}>Do today</button>
+                  <input type="date" className="btn-xs" value={scheduleFor[t.id] ?? ''} onChange={(e) => setScheduleFor({ ...scheduleFor, [t.id]: e.target.value })} />
+                  <button className="btn-xs blue" disabled={!scheduleFor[t.id]} onClick={() => triage(t.id, 'schedule')}>Schedule</button>
+                  <button className="btn-xs" onClick={() => triage(t.id, 'someday')}>Someday</button>
+                  <button className="btn-xs red" onClick={() => triage(t.id, 'drop')}>Drop</button>
+                </div>
+              </div>
+            ))}
+            <p className="muted">Carried-over tasks stop nagging after two days. Decide once; nothing is lost. Someday items live in the vault below.</p>
+          </div>
+        </div>
+      )}
+
+      {visible.length > 0 && (
         <div style={{ display: 'flex', gap: 6 }}>
-          {(['priority', 'status'] as GroupMode[]).map(mode => (
-            <button key={mode} onClick={() => setGroupMode(mode)} style={{
-              padding: '8px 14px', borderRadius: 20, border: 'none',
-              background: groupMode === mode ? '#4488ff' : '#1a1a1a',
-              color: groupMode === mode ? '#fff' : '#555',
-              fontSize: 12, fontWeight: 600, cursor: 'pointer',
-            }}>
-              {mode === 'priority' ? '🎯 By Priority' : '📋 By Status'}
-            </button>
+          {(['priority', 'status'] as const).map((mode) => (
+            <button key={mode} className={`range-tab ${groupMode === mode ? 'active' : ''}`} onClick={() => setGroupMode(mode)}>{mode === 'priority' ? '🎯 By priority' : '📋 By status'}</button>
           ))}
         </div>
       )}
 
-      {/* Task groups */}
-      {tasks.length === 0
-        ? <p className="empty">No tasks for today. Add one above.</p>
-        : groupMode === 'priority' ? renderByPriority() : renderByStatus()
-      }
+      {visible.length === 0 && triageList.length === 0 && <p className="empty">Nothing on the board for this day. Add a task above or tell the Omni-Bar what you need to do.</p>}
 
+      {visible.length > 0 && groupMode === 'priority' && (
+        <div style={{ display: 'grid', gap: 10 }}>
+          {groupedByPriority.map(({ p, items }) => items.length === 0 ? null : (
+            <div key={p} className="group-wrap">
+              <div className="group-head" style={{ color: PRIORITY_META[p].color, background: PRIORITY_META[p].bg }}>
+                <span>{PRIORITY_META[p].label}</span>
+                <span>{items.filter((t) => t.status === 'completed').length}/{items.length}</span>
+              </div>
+              {items.map((t) => renderTask(t))}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {visible.length > 0 && groupMode === 'status' && (
+        <div style={{ display: 'grid', gap: 10 }}>
+          {groupedByStatus.map(({ s, items }) => items.length === 0 ? null : (
+            <div key={s}>
+              <div style={{ fontSize: 11, color: '#6f829a', fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 8 }}>{STATUS_LABELS[s]}</div>
+              {items.map((t) => renderTask(t))}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="card">
+        <div className="someday-head" onClick={() => setShowSomeday((v) => !v)}>
+          <div className="card-title" style={{ marginBottom: 0 }}>🗄 Someday vault · {someday.length}</div>
+          <span style={{ color: '#6f829a' }}>{showSomeday ? '▾' : '▸'}</span>
+        </div>
+        {showSomeday && (
+          <div style={{ marginTop: 12, position: 'relative' }}>
+            {someday.length === 0 ? <p className="muted">Empty. Park ideas here instead of dropping them.</p> : someday.map((t) => (
+              <div key={t.id} className="hurdle-row" style={{ marginBottom: 6 }}>
+                <span>{t.title}</span>
+                <div className="chip-row">
+                  <button className="btn-xs green" onClick={() => triage(t.id, 'today')}>Bring back</button>
+                  <button className="btn-xs red" onClick={() => remove(t.id)}>✕</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

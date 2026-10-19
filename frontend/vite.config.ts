@@ -9,6 +9,8 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg'],
+      workbox: { importScripts: ['push-sw.js'] },
+      devOptions: { enabled: true, type: 'classic' },
       manifest: {
         name: 'LifeLog',
         short_name: 'LifeLog',

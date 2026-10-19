@@ -1,9 +1,17 @@
 import { Router, Request, Response } from 'express';
-import db, { withTransaction } from '../database';
+import db, { withTransaction, TIME_CATEGORIES } from '../database';
 import { requireAuth } from '../middleware/requireAuth';
+import { isIsoDate } from '../lib/dates';
 
 const router = Router();
 router.use(requireAuth);
+
+const validCategory = (c: unknown): c is (typeof TIME_CATEGORIES)[number] =>
+  typeof c === 'string' && (TIME_CATEGORIES as readonly string[]).includes(c);
+
+router.get('/categories', (_req: Request, res: Response) => {
+  res.json(TIME_CATEGORIES);
+});
 
 router.get('/', async (req: Request, res: Response) => {
   const { date } = req.query;
@@ -23,12 +31,12 @@ router.get('/summary/:date', async (req: Request, res: Response) => {
   res.json(summary);
 });
 
+// PUT /api/time-logs/daily — set the day's total for one category.
 router.put('/daily', async (req: Request, res: Response) => {
   const { date, category, minutes, note } = req.body;
-  if (!date || !category || minutes === undefined || minutes === null) {
-    return res.status(400).json({ error: 'date, category, and minutes are required' });
+  if (!isIsoDate(date) || !validCategory(category) || minutes === undefined || minutes === null) {
+    return res.status(400).json({ error: 'date, a valid category, and minutes are required' });
   }
-
   const normalizedMinutes = Math.max(0, Number(minutes) || 0);
   const result = await withTransaction(async (tx) => {
     await tx.run('DELETE FROM time_logs WHERE date = ? AND category = ? AND user_id = ?', date, category, req.userId);
@@ -37,15 +45,15 @@ router.put('/daily', async (req: Request, res: Response) => {
       req.userId, date, category, normalizedMinutes, note ?? null
     );
   });
-
   const log = await db.get('SELECT * FROM time_logs WHERE id = ?', result.lastInsertRowid);
   res.json(log);
 });
 
+// POST /api/time-logs — append minutes (used by the focus timer and the Omni-Bar).
 router.post('/', async (req: Request, res: Response) => {
   const { date, category, minutes, note } = req.body;
-  if (!date || !category || minutes === undefined || minutes === null) {
-    return res.status(400).json({ error: 'date, category, and minutes are required' });
+  if (!isIsoDate(date) || !validCategory(category) || minutes === undefined || minutes === null) {
+    return res.status(400).json({ error: 'date, a valid category, and minutes are required' });
   }
   const result = await db.run(
     'INSERT INTO time_logs (user_id, date, category, minutes, note) VALUES (?, ?, ?, ?, ?)',

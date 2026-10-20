@@ -196,3 +196,16 @@ test('habit block duration follows explicit label minutes, with honest floor/tar
   assert.equal(habitBlockMinutes('Standard session',false),15);
   assert.equal(habitBlockMinutes('120 minutes',false),60);
 });
+
+import { parseOmni } from '../src/lib/omni-parser';
+
+test('parseOmni: natural voice task phrases and imperative task clauses create tasks', () => {
+  const p = parseOmni('I need to send the contract urgent, add a task to buy oat milk, call the dentist, 500ml water');
+  assert.equal(p.waterMl, 500);
+  assert.deepEqual(p.newTasks, [
+    { title: 'send the contract', priority: 'urgent' },
+    { title: 'buy oat milk', priority: 'medium' },
+    { title: 'call the dentist', priority: 'medium' },
+  ]);
+  assert.deepEqual(p.unparsed, []);
+});

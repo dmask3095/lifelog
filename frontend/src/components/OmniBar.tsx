@@ -4,22 +4,22 @@ import { getJournal, omniLog, saveJournal } from '../api';
 import { useRefresh } from '../context/RefreshContext';
 import type { OmniPlan } from '../types';
 import { fmtMinutes } from '../lib/dates';
-import { createSubmitGuard, describeError, normalizeTitle } from '../lib/capture';
+import { assembleSpeechTranscript, createSubmitGuard, describeError, normalizeTitle, type SpeechResultItem } from '../lib/capture';
 
 interface Props { date: string; }
 
 const EXAMPLES = [
   'Slept 11:30pm to 7am, drank 750ml water, finished the auth PR, 90m deep work, mood 4',
   'Stuck on the OAuth redirect bug, 45m admin emails, had chicken salad and a coffee',
-  'Todo: send invoice to Priya !, 30m walk, feeling tired, note: proud I showed up anyway',
+  'Add task send invoice to Priya urgent, 30m walk, feeling tired, note: proud I showed up',
 ];
-const EMPTY_HINT = 'Type what happened first, e.g. “slept 11pm to 7am, 750ml water, todo: send invoice”.';
+const EMPTY_HINT = 'Type or speak what happened, e.g. “slept 11pm to 7am, 750ml water, add task send invoice”.';
 const HIT = { minHeight: 40, minWidth: 40 } as const;
 
 type SpeechCtor = new () => {
   lang: string; interimResults: boolean; continuous: boolean;
-  onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
-  onend: (() => void) | null; onerror: (() => void) | null; start: () => void; stop: () => void;
+  onresult: ((e: { resultIndex?: number; results: ArrayLike<SpeechResultItem> }) => void) | null;
+  onend: (() => void) | null; onerror: (() => void) | null; start: () => void; stop: () => void; abort?: () => void;
 };
 
 function speechCtor(): SpeechCtor | null {
@@ -58,9 +58,29 @@ export default function OmniBar({ date }: Props) {
   const [hint, setHint] = useState('');
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const recRef = useRef<InstanceType<SpeechCtor> | null>(null);
+  const sessionBaseRef = useRef('');
+  const startIndexRef = useRef(0);
+  const latestTextRef = useRef('');
   const guardRef = useRef(createSubmitGuard());
   const appliedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const canSpeak = speechCtor() !== null;
+
+  const stopVoice = () => {
+    const rec = recRef.current;
+    if (rec) {
+      rec.onresult = null;
+      rec.onend = null;
+      rec.onerror = null;
+      try {
+        if (typeof rec.abort === 'function') rec.abort();
+        else rec.stop();
+      } catch { /* ignore */ }
+      recRef.current = null;
+    }
+    sessionBaseRef.current = '';
+    startIndexRef.current = 0;
+    setListening(false);
+  };
 
   // Cmd/Ctrl+K focuses the bar from anywhere.
   useEffect(() => {
@@ -74,7 +94,10 @@ export default function OmniBar({ date }: Props) {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  useEffect(() => () => { if (appliedTimer.current) clearTimeout(appliedTimer.current); }, []);
+  useEffect(() => () => {
+    stopVoice();
+    if (appliedTimer.current) clearTimeout(appliedTimer.current);
+  }, []);
 
   // Debounced live preview of what will be written. Stale responses are ignored.
   useEffect(() => {
@@ -95,11 +118,17 @@ export default function OmniBar({ date }: Props) {
 
   /** Put text back in the box after a failure, unless the user already typed something new. */
   const restore = (value: string) => {
-    setText((cur) => (cur.trim() ? cur : value));
+    setText((cur) => {
+      const next = cur.trim() ? cur : value;
+      latestTextRef.current = next;
+      return next;
+    });
     setTimeout(autoGrow, 0);
   };
 
   const commit = async (raw: string) => {
+    // Always terminate any active speech session first so old utterances cannot re-populate after submit.
+    stopVoice();
     const value = raw.trim();
     const guard = guardRef.current;
     if (!value) {
@@ -116,6 +145,7 @@ export default function OmniBar({ date }: Props) {
     setFailedText(null);
     setApplied(null);
     setSubmitting({ text: value, chips: plan ? previewChips(plan) : [] });
+    latestTextRef.current = '';
     setText('');
     setPlan(null);
     setTimeout(autoGrow, 0);
@@ -139,7 +169,7 @@ export default function OmniBar({ date }: Props) {
       }
       if (appliedItems.length === 0) {
         restore(value);
-        setError('Nothing recognised yet. Try "slept 11pm to 7am", "750ml water", "finished X", "stuck on Y", "60m deep work", "mood 4", "todo: …".');
+        setError('Nothing recognised yet. Try "slept 11pm to 7am", "750ml water", "finished X", "stuck on Y", "60m deep work", "mood 4", "add task …".');
         guard.reset(key);
       } else {
         setApplied(appliedItems);
@@ -158,27 +188,41 @@ export default function OmniBar({ date }: Props) {
     }
   };
 
-  const onSubmit = (e: FormEvent) => { e.preventDefault(); void commit(text); };
+  const onSubmit = (e: FormEvent) => { e.preventDefault(); void commit(latestTextRef.current || text); };
 
   const toggleVoice = () => {
     const Ctor = speechCtor();
     if (!Ctor) return;
     if (listening) {
-      recRef.current?.stop();
-      setListening(false);
+      stopVoice();
       return;
     }
+    stopVoice();
+    // Clear previous log banners so the user only sees the current voice session.
+    setApplied(null);
+    setError('');
+    setHint('');
+    sessionBaseRef.current = latestTextRef.current.trim();
+    startIndexRef.current = 0;
+
     const rec = new Ctor();
     rec.lang = navigator.language || 'en-US';
-    rec.interimResults = false;
+    rec.interimResults = true;
     rec.continuous = true;
     rec.onresult = (e) => {
-      const parts: string[] = [];
-      for (let i = 0; i < e.results.length; i++) parts.push(e.results[i][0].transcript);
-      setText((prev) => `${prev ? prev.trim() + ', ' : ''}${parts.join(', ')}`);
+      const { text: assembled } = assembleSpeechTranscript(sessionBaseRef.current, e.results, startIndexRef.current, ', ');
+      latestTextRef.current = assembled;
+      setText(assembled);
+      setTimeout(autoGrow, 0);
     };
-    rec.onend = () => setListening(false);
-    rec.onerror = () => setListening(false);
+    rec.onend = () => {
+      recRef.current = null;
+      setListening(false);
+    };
+    rec.onerror = () => {
+      recRef.current = null;
+      setListening(false);
+    };
     recRef.current = rec;
     rec.start();
     setListening(true);
@@ -198,15 +242,25 @@ export default function OmniBar({ date }: Props) {
           value={text}
           aria-label="Log your day"
           aria-invalid={hint ? true : undefined}
-          placeholder="Log your day in one line… sleep, water, tasks, hurdles, time, mood (⌘K)"
-          onChange={(e) => { setText(e.target.value); if (hint) setHint(''); autoGrow(); }}
+          placeholder="Log your day or say “add task …” — sleep, water, tasks, hurdles, time, mood (⌘K)"
+          onChange={(e) => {
+            const val = e.target.value;
+            latestTextRef.current = val;
+            setText(val);
+            if (listening) {
+              // If the user edits or clears the box while the mic is on, reset the voice baseline.
+              stopVoice();
+            }
+            if (hint) setHint('');
+            autoGrow();
+          }}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void commit(text); }
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void commit(latestTextRef.current || text); }
           }}
         />
         <div className="omni-buttons">
           {canSpeak && (
-            <button type="button" className={`omni-mic ${listening ? 'live' : ''}`} style={HIT} onClick={toggleVoice} aria-pressed={listening} aria-label={listening ? 'Stop listening' : 'Speak your log'} title="Speak">
+            <button type="button" className={`omni-mic ${listening ? 'live' : ''}`} style={HIT} onClick={toggleVoice} aria-pressed={listening} aria-label={listening ? 'Stop listening' : 'Speak your log'} title={listening ? 'Stop listening' : 'Speak your log or task'}>
               {listening ? <Square size={16} aria-hidden="true" /> : <Mic size={18} aria-hidden="true" />}
             </button>
           )}
@@ -222,7 +276,7 @@ export default function OmniBar({ date }: Props) {
       {!text && !applied && !submitting && (
         <div className="omni-examples">
           {EXAMPLES.map((ex) => (
-            <button key={ex} type="button" className="omni-example" style={{ minHeight: 40 }} onClick={() => { setText(ex); setHint(''); setTimeout(autoGrow, 0); inputRef.current?.focus(); }}>
+            <button key={ex} type="button" className="omni-example" style={{ minHeight: 40 }} onClick={() => { latestTextRef.current = ex; setText(ex); setHint(''); setTimeout(autoGrow, 0); inputRef.current?.focus(); }}>
               {ex.length > 46 ? ex.slice(0, 46) + '…' : ex}
             </button>
           ))}
@@ -265,7 +319,7 @@ export default function OmniBar({ date }: Props) {
           <CircleAlert size={14} aria-hidden="true" />
           <span style={{ flex: 1, minWidth: 0 }}>{error}</span>
           {failedText && (
-            <button type="button" className="btn-xs capture-retry" style={HIT} onClick={() => { const v = text.trim() ? text : failedText; void commit(v); }}>
+            <button type="button" className="btn-xs capture-retry" style={HIT} onClick={() => { const v = (latestTextRef.current || text).trim() ? (latestTextRef.current || text) : failedText; void commit(v); }}>
               <RotateCw size={13} aria-hidden="true" /> Retry
             </button>
           )}

@@ -51,6 +51,12 @@ export function parseQuickTitle(raw: string): { title: string; priority?: Priori
   let priority: Priority | undefined;
   let energy_tag: EnergyTag | undefined;
 
+  // Strip natural spoken task prefixes ("add a task to ...", "remind me to ...", "todo: ...")
+  const prefix = text.match(
+    /^(?:please\s+)?(?:i\s+|i've\s+|i'll\s+)?(?:add (?:a )?(?:new )?task(?:\s+to)?|create (?:a )?(?:new )?task(?:\s+to)?|new task|todo|to-do|to do|task|remind me to|remember to|don'?t forget to|need to|have to|gotta|got to)\s*:?\s+(.+)$/i
+  );
+  if (prefix) text = normalizeTitle(prefix[1]);
+
   text = text.replace(/(^|\s)#([a-z]+)\b/gi, (match, lead: string, word: string) => {
     const w = word.toLowerCase();
     if ((ENERGIES as string[]).includes(w)) { energy_tag = w as EnergyTag; return lead; }
@@ -64,7 +70,65 @@ export function parseQuickTitle(raw: string): { title: string; priority?: Priori
     text = text.slice(0, text.length - bang[0].length);
   }
 
+  // Spoken trailing/leading priority & energy phrases (e.g. "... urgent", "... high priority", "... deep work")
+  const spokenEnergy = text.match(/^(.*?)\s*[,-]?\s*\b(deep work|quick task|admin task|recovery task)\s*[.!]?$/i);
+  if (spokenEnergy && normalizeTitle(spokenEnergy[1])) {
+    const phrase = spokenEnergy[2].toLowerCase();
+    if (!energy_tag) {
+      if (phrase.startsWith('deep')) energy_tag = 'deep';
+      else if (phrase.startsWith('quick')) energy_tag = 'quick';
+      else if (phrase.startsWith('admin')) energy_tag = 'admin';
+      else if (phrase.startsWith('recovery')) energy_tag = 'recovery';
+    }
+    text = normalizeTitle(spokenEnergy[1]);
+  }
+
+  const spokenPrioEnd = text.match(/^(.*?)\s*[,-]?\s*\b(urgent priority|urgent|asap|high priority|important|low priority)\s*[.!]?$/i);
+  if (spokenPrioEnd && normalizeTitle(spokenPrioEnd[1])) {
+    const word = spokenPrioEnd[2].toLowerCase();
+    if (!priority) {
+      if (word.startsWith('urgent') || word === 'asap') priority = 'urgent';
+      else if (word.startsWith('high') || word === 'important') priority = 'high';
+      else if (word.startsWith('low')) priority = 'low';
+    }
+    text = normalizeTitle(spokenPrioEnd[1]);
+  }
+
+  text = text.replace(/^[,:\s-]+|[.,;:\s-]+$/g, '');
   return { title: normalizeTitle(text), priority, energy_tag };
+}
+
+export interface SpeechResultItem {
+  isFinal?: boolean;
+  0: { transcript: string };
+}
+
+/**
+ * Pure transcript assembler for Web Speech API `onresult`.
+ * Web Speech's `e.results` is cumulative across the entire recognition session. Computing
+ * the field value from `baseText` (captured when the mic started) + `results[startIndex..]`
+ * prevents duplicating earlier phrases on subsequent `onresult` ticks and ignores any
+ * utterances from before `startIndex` (e.g. a previously submitted log).
+ */
+export function assembleSpeechTranscript(
+  baseText: string,
+  results: ArrayLike<SpeechResultItem>,
+  startIndex: number = 0,
+  sep: string = ', ',
+): { text: string; spoken: string; hasFinal: boolean } {
+  const parts: string[] = [];
+  let hasFinal = false;
+  for (let i = Math.max(0, startIndex); i < results.length; i++) {
+    const item = results[i];
+    const piece = item && item[0] ? normalizeTitle(item[0].transcript) : '';
+    if (!piece) continue;
+    parts.push(piece);
+    if (item.isFinal !== false) hasFinal = true;
+  }
+  const spoken = parts.join(sep);
+  const base = normalizeTitle(baseText);
+  const text = base && spoken ? `${base}${sep}${spoken}` : base || spoken;
+  return { text, spoken, hasFinal };
 }
 
 let seq = 0;

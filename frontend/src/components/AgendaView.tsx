@@ -1,13 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Archive, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, Clock, LoaderCircle, Play, Plus, RotateCcw, RotateCw, TriangleAlert, X } from 'lucide-react';
+import { Archive, CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, Clock, LoaderCircle, Mic, Play, Plus, RotateCcw, RotateCw, Square, TriangleAlert, X } from 'lucide-react';
 import { createHurdle, deleteTask, getSomedayTasks, getTaskHurdles, getTasks, resolveHurdle, splitTask, updateTask } from '../api';
 import { useRefresh } from '../context/RefreshContext';
 import { daysBetween, formatShort } from '../lib/dates';
 import { getMvd, MVD_EVENT } from '../lib/mvd';
 import {
-  applyMvd, createSubmitGuard, describeError, HIGHLIGHT_MS, mergeForDisplay, parseQuickTitle,
-  patchTask, removeTask, settledTempIds, type PendingAdd,
+  applyMvd, assembleSpeechTranscript, createSubmitGuard, describeError, HIGHLIGHT_MS, mergeForDisplay, parseQuickTitle,
+  patchTask, removeTask, settledTempIds, type PendingAdd, type SpeechResultItem,
 } from '../lib/capture';
+
+type SpeechCtor = new () => {
+  lang: string; interimResults: boolean; continuous: boolean;
+  onresult: ((e: { results: ArrayLike<SpeechResultItem> }) => void) | null;
+  onend: (() => void) | null; onerror: (() => void) | null; start: () => void; stop: () => void; abort?: () => void;
+};
+
+function speechCtor(): SpeechCtor | null {
+  const w = window as unknown as { SpeechRecognition?: SpeechCtor; webkitSpeechRecognition?: SpeechCtor };
+  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
+}
 import { useExpiring, useQuickAdd } from '../lib/useQuickAdd';
 import { ENERGY_META, PRIORITY_META, type EnergyTag, type Hurdle, type Priority, type SummaryData, type Task } from '../types';
 
@@ -105,6 +116,27 @@ export default function AgendaView({ date, today, summary, onChanged }: Props) {
   const [someday, setSomeday] = useState<Task[]>([]);
   const [title, setTitle] = useState('');
   const [addHint, setAddHint] = useState('');
+  const [listening, setListening] = useState(false);
+  const recRef = useRef<InstanceType<SpeechCtor> | null>(null);
+  const sessionBaseRef = useRef('');
+  const latestTitleRef = useRef('');
+  const canSpeak = speechCtor() !== null;
+
+  const stopVoice = () => {
+    const rec = recRef.current;
+    if (rec) {
+      rec.onresult = null;
+      rec.onend = null;
+      rec.onerror = null;
+      try {
+        if (typeof rec.abort === 'function') rec.abort();
+        else rec.stop();
+      } catch { /* ignore */ }
+      recRef.current = null;
+    }
+    sessionBaseRef.current = '';
+    setListening(false);
+  };
   const [priority, setPriority] = useState<Priority>('medium');
   const [energy, setEnergy] = useState<EnergyTag>('quick');
   const [groupMode, setGroupMode] = useState<'priority' | 'status'>('priority');
@@ -165,18 +197,60 @@ export default function AgendaView({ date, today, summary, onChanged }: Props) {
 
   const refresh = async () => { await load(); onChanged(); };
 
-  const handleAdd = (e: FormEvent) => {
-    e.preventDefault();
-    const parsed = parseQuickTitle(title);
+  const commitTaskTitle = (raw: string) => {
+    stopVoice();
+    const parsed = parseQuickTitle(raw);
     const outcome = submit({ title: parsed.title, date, priority: parsed.priority ?? priority, energy_tag: parsed.energy_tag ?? energy });
     if (outcome === 'empty') {
       setAddHint(EMPTY_HINT);
       inputRef.current?.focus();
       return;
     }
+    latestTitleRef.current = '';
     setTitle('');
     setAddHint('');
     inputRef.current?.focus();
+  };
+
+  const handleAdd = (e: FormEvent) => {
+    e.preventDefault();
+    commitTaskTitle(latestTitleRef.current || title);
+  };
+
+  const toggleVoice = () => {
+    const Ctor = speechCtor();
+    if (!Ctor) return;
+    if (listening) {
+      const cur = (latestTitleRef.current || title).trim();
+      stopVoice();
+      if (cur) commitTaskTitle(cur);
+      return;
+    }
+    stopVoice();
+    setAddHint('');
+    sessionBaseRef.current = latestTitleRef.current.trim();
+    const rec = new Ctor();
+    rec.lang = navigator.language || 'en-US';
+    rec.interimResults = true;
+    rec.continuous = false;
+    rec.onresult = (e) => {
+      const { text: assembled } = assembleSpeechTranscript(sessionBaseRef.current, e.results, 0, ' ');
+      latestTitleRef.current = assembled;
+      setTitle(assembled);
+    };
+    rec.onend = () => {
+      recRef.current = null;
+      setListening(false);
+      const captured = latestTitleRef.current.trim();
+      if (captured) commitTaskTitle(captured);
+    };
+    rec.onerror = () => {
+      recRef.current = null;
+      setListening(false);
+    };
+    recRef.current = rec;
+    rec.start();
+    setListening(true);
   };
 
   /** Optimistic, guarded mutation: apply locally, call the API, reconcile; on failure reload and explain. */
@@ -354,14 +428,33 @@ export default function AgendaView({ date, today, summary, onChanged }: Props) {
           <input
             ref={inputRef}
             value={title}
-            onChange={(e) => { setTitle(e.target.value); if (addHint) setAddHint(''); }}
-            placeholder="Add a task… (Enter)"
+            onChange={(e) => {
+              const val = e.target.value;
+              latestTitleRef.current = val;
+              setTitle(val);
+              if (listening) stopVoice();
+              if (addHint) setAddHint('');
+            }}
+            placeholder={listening ? 'Listening… say your task' : 'Add a task… type or tap mic (Enter)'}
             aria-label="New task"
             aria-invalid={addHint ? true : undefined}
             enterKeyHint="done"
             className="input"
             style={{ flex: 1, minWidth: 0, minHeight: 40 }}
           />
+          {canSpeak && (
+            <button
+              type="button"
+              className={`omni-mic task-mic ${listening ? 'live' : ''}`}
+              style={HIT}
+              onClick={toggleVoice}
+              aria-pressed={listening}
+              aria-label={listening ? 'Stop and add spoken task' : 'Add task by voice'}
+              title={listening ? 'Stop and add task' : 'Add task by voice'}
+            >
+              {listening ? <Square size={15} aria-hidden="true" /> : <Mic size={17} aria-hidden="true" />}
+            </button>
+          )}
           <select value={priority} onChange={(e) => setPriority(e.target.value as Priority)} className="select" aria-label="Priority" style={{ flexShrink: 0, width: 120, minHeight: 40 }}>
             <option value="urgent">Urgent</option>
             <option value="high">High</option>

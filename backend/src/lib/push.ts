@@ -83,30 +83,39 @@ function localDateParts(nowUtcMs: number, tzOffsetMinutes: number) {
   return { date: local.toISOString().slice(0, 10), minutes: local.getUTCHours() * 60 + local.getUTCMinutes() };
 }
 
+// Single idempotent pass over push_subscriptions: safe to call from a serverless cron,
+// a health check, or the 60-second background interval.
+export async function runPushReminderTick(): Promise<{ checked: number; sent: number }> {
+  ensureVapid();
+  let checked = 0;
+  let sent = 0;
+  try {
+    const subs = await db.all<any>('SELECT * FROM push_subscriptions');
+    checked = subs.length;
+    const now = Date.now();
+    for (const s of subs) {
+      const { date, minutes } = localDateParts(now, Number(s.tz_offset_minutes) || 0);
+      const target = Number(s.reminder_hour) * 60 + Number(s.reminder_minute);
+      if (s.last_sent_date === date || minutes < target || minutes > target + 90) continue;
+      await db.run('UPDATE push_subscriptions SET last_sent_date = ? WHERE id = ?', date, s.id);
+      const ok = await sendToSubscription(s, {
+        title: 'Close your day',
+        body: 'Mood, one win, tomorrow’s top task. 60 seconds, then rest.',
+        url: '/?close=1',
+        tag: 'lifelog-close-day',
+      });
+      if (ok) sent++;
+    }
+  } catch (err) {
+    console.warn('push scheduler tick failed', err);
+  }
+  return { checked, sent };
+}
+
 // Evening "close your day" reminder. Checks once a minute; each subscription fires at its own
 // local time at most once per local day. tz_offset_minutes is what the browser reported.
 export function startPushScheduler() {
   ensureVapid();
-  const tick = async () => {
-    try {
-      const subs = await db.all<any>('SELECT * FROM push_subscriptions');
-      const now = Date.now();
-      for (const s of subs) {
-        const { date, minutes } = localDateParts(now, Number(s.tz_offset_minutes) || 0);
-        const target = Number(s.reminder_hour) * 60 + Number(s.reminder_minute);
-        if (s.last_sent_date === date || minutes < target || minutes > target + 90) continue;
-        await db.run('UPDATE push_subscriptions SET last_sent_date = ? WHERE id = ?', date, s.id);
-        await sendToSubscription(s, {
-          title: 'Close your day',
-          body: 'Mood, one win, tomorrow’s top task. 60 seconds, then rest.',
-          url: '/?close=1',
-          tag: 'lifelog-close-day',
-        });
-      }
-    } catch (err) {
-      console.warn('push scheduler tick failed', err);
-    }
-  };
-  setInterval(tick, 60_000).unref();
-  void tick();
+  setInterval(() => { void runPushReminderTick(); }, 60_000).unref();
+  void runPushReminderTick();
 }

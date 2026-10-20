@@ -202,12 +202,17 @@ export function parseOmni(text: string): OmniPlan {
       continue;
     }
 
-    // ---- new task ----------------------------------------------------------
-    const todo = clause.match(/^(?:todo|to-do|to do|task|tasks?:|need to|needs to|have to|must|remind me to|add task|add|plan to|should|gotta|got to)\s*:?\s*(.+)$/i);
-    if (todo) {
+    // ---- new task (typed or spoken by voice) -------------------------------
+    const todo = clause.match(
+      /^(?:please\s+|also\s+|and\s+)?(?:i\s+|i've\s+|i\s+will\s+|i'll\s+)?(?:todo|to-do|to do|new task|add (?:a )?task(?:\s+to)?|create (?:a )?task(?:\s+to)?|put on (?:my )?(?:todo|task )?list|task|tasks?|need to|needs to|have to|must|remind me to|remember to|don'?t forget to|add|plan to|should|gotta|got to|want to|wanna|going to|gonna)\s*:?\s*(.+)$/i
+    ) || clause.match(
+      /^(?:please\s+)?((?:buy|call|email|text|message|pay|schedule|book|draft|prepare|review|update|clean|pick up|drop off|follow up(?: with| on)?|reach out to|contact|order|renew|cancel|register for|apply to|apply for|send|submit|fix|write|build|design|deploy)\s+.+)$/i
+    );
+    if (todo && durationMinutes(clause) == null) {
       const { priority, cleaned } = priorityFrom(todo[1]);
-      if (cleaned) {
-        plan.newTasks.push({ title: tidy(cleaned), priority });
+      const stripped = tidy(cleaned.replace(/\b(?:to my (?:tasks?|todo list|list)|for today|today)\s*$/i, ''));
+      if (stripped) {
+        plan.newTasks.push({ title: stripped, priority });
         continue;
       }
     }

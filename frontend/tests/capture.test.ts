@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  applyHabitState, applyMvd, createSubmitGuard, describeError, isFresh, makePending, markError, markSaved,
+  applyHabitState, applyMvd, assembleSpeechTranscript, createSubmitGuard, describeError, isFresh, makePending, markError, markSaved,
   markSaving, mergeForDisplay, nextHabitState, parseQuickTitle, patchTask, removeTask, settledTempIds, taskKey,
   HIGHLIGHT_MS, type PendingAdd,
 } from '../src/lib/capture.ts';
@@ -186,4 +186,46 @@ test('habits: two stale taps from the same render resolve to the same state (lag
   const first = nextHabitState(rendered, 'silver');
   const second = nextHabitState(rendered, 'silver');
   assert.deepEqual(first, second);
+});
+
+test('parseQuickTitle: spoken task prefixes and spoken priority/energy phrases', () => {
+  assert.deepEqual(parseQuickTitle('Add a task to call the dentist urgent'), {
+    title: 'call the dentist',
+    priority: 'urgent',
+    energy_tag: undefined,
+  });
+  assert.deepEqual(parseQuickTitle('Remind me to write the launch post deep work'), {
+    title: 'write the launch post',
+    priority: undefined,
+    energy_tag: 'deep',
+  });
+  assert.deepEqual(parseQuickTitle('Todo: send invoice to Priya high priority'), {
+    title: 'send invoice to Priya',
+    priority: 'high',
+    energy_tag: undefined,
+  });
+});
+
+test('assembleSpeechTranscript: cumulative Web Speech results never duplicate earlier utterances or leak previous entries', () => {
+  // First utterance arrives
+  const r1 = [{ isFinal: true, 0: { transcript: 'drank 2 glasses of water' } }];
+  assert.equal(assembleSpeechTranscript('', r1, 0, ', ').text, 'drank 2 glasses of water');
+
+  // Second utterance arrives in the SAME cumulative SpeechRecognitionResultList
+  const r2 = [
+    { isFinal: true, 0: { transcript: 'drank 2 glasses of water' } },
+    { isFinal: true, 0: { transcript: 'add task call the dentist' } },
+  ];
+  assert.equal(
+    assembleSpeechTranscript('', r2, 0, ', ').text,
+    'drank 2 glasses of water, add task call the dentist',
+    'first utterance must not be repeated when second utterance arrives',
+  );
+
+  // After submit, a new session starts with baseText = '' and fresh results (or advanced startIndex)
+  assert.equal(
+    assembleSpeechTranscript('', [{ isFinal: true, 0: { transcript: 'mood 4' } }], 0, ', ').text,
+    'mood 4',
+    'previously submitted voice entry never appears in the next session',
+  );
 });

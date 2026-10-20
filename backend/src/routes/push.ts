@@ -1,12 +1,18 @@
 import { Router, Request, Response } from 'express';
 import db from '../database';
 import { requireAuth } from '../middleware/requireAuth';
-import { ensureVapid, sendToUser } from '../lib/push';
+import { ensureVapid, runPushReminderTick, sendToUser } from '../lib/push';
 
 const router = Router();
 
 router.get('/vapid', (_req: Request, res: Response) => {
   res.json({ publicKey: ensureVapid() });
+});
+
+// Public, idempotent cron endpoint for Vercel Serverless Cron or external keep-alive pingers.
+router.all('/cron', async (_req: Request, res: Response) => {
+  const result = await runPushReminderTick();
+  res.json({ ok: true, ...result, timestamp: new Date().toISOString() });
 });
 
 router.use(requireAuth);
